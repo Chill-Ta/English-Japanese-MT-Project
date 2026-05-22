@@ -37,6 +37,5 @@ This project implements a vanilla Transformer architecture optimized for bidirec
 │   ├── encoder.py                  # Pre-LN Encoder Layers and Block Stack
 │   ├── decoder.py                  # Pre-LN Decoder Layers and Block Stack
 │   └── transformer.py              # Core Transformer module with weight/embedding sharing
-├── checkpoints/                    # Saved model checkpoints (not uploaded)
 └── train.py                        # Main training execution script
 ```
