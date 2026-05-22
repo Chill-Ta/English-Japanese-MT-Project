@@ -1,4 +1,4 @@
-from tokenizers import Tokenizer, normalizers, pre_tokenizers
+from tokenizers import Tokenizer, normalizers, pre_tokenizers, decoders
 from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 # Removed StripAccents — it destroys Japanese characters (e.g., が→か, ば→は)
@@ -33,16 +33,11 @@ def train_tokenizer(data_path, save_path, vocab_size=32000, max_lines=1_000_000)
     # Use NFKC normalization only — safe for both Japanese and English
     tokenizer.normalizer = normalizers.Sequence([NFKC()])
     
-    # Fix: UnicodeScripts + Whitespace is best for ja-en
-    # UnicodeScripts separates boundaries between Latin / Kanji / Hiragana / Katakana characters first,
-    # then Whitespace separates words in EN normally.
-    # Result:
-    #   EN: ['Hello', ',', 'how', 'are', 'you', '?']         
-    #   JA: ['こんにちは', '、', '世界', '!', 'それはテストです', '。'] 
-    # (The previously recommended Whitespace+ByteLevel was incorrect — it turns JA into byte garbage)
+    # Fix: UnicodeScripts + Metaspace is best for ja-en
+    # Removed 'add_prefix_space=True' as Metaspace handles it by default
     tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
         pre_tokenizers.UnicodeScripts(),
-        pre_tokenizers.Whitespace()
+        pre_tokenizers.Metaspace(replacement=" ")
     ])
     
     # 3. Configure Trainer
@@ -54,6 +49,10 @@ def train_tokenizer(data_path, save_path, vocab_size=32000, max_lines=1_000_000)
     
     # 4. Train via Generator
     tokenizer.train_from_iterator(batch_iterator(data_path, max_lines), trainer=trainer)
+
+    # Embed the Decoder directly into the Tokenizer.
+    # Removed 'add_prefix_space=True' here as well
+    tokenizer.decoder = decoders.Metaspace(replacement=" ")
 
     # 5. Save Tokenizer
     tokenizer.save(save_path)

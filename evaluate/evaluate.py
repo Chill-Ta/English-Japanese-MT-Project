@@ -2,6 +2,10 @@ import torch
 import sacrebleu
 import argparse
 import re
+import os
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from tqdm import tqdm
 from tokenizers import Tokenizer
 from model.transformer import Transformer
@@ -10,15 +14,18 @@ from comet import download_model, load_from_checkpoint
 # ==========================================
 # 1. Argument Parser Configuration
 # ==========================================
-parser = argparse.ArgumentParser(description="Evaluate Transformer MT Model")
+parser = argparse.ArgumentParser(description="Evaluate Transformer MT Model with Beam Search")
 parser.add_argument("--direction", type=str, default="en-ja", choices=["en-ja", "ja-en"],
                     help="Direction: en-ja (English->Japanese) or ja-en (Japanese->English)")
-parser.add_argument("--checkpoint", type=str, default="checkpoints/transformer_epoch_10.pt",
+parser.add_argument("--checkpoint", type=str, default="checkpoints/transformer_epoch_20.pt",
                     help="File in Checkpoint Path")
-
 parser.add_argument("--src_col", type=int, default=0, help="Source column (0-indexed)")
 parser.add_argument("--tgt_col", type=int, default=1, help="Target/Reference column (0-indexed)")
 parser.add_argument("--has_header", action="store_true", help="Set this flag if the file contains a header row")
+
+# --- Add Arguments for Beam Search ---
+parser.add_argument("--beam_width", type=int, default=3, help="Beam size for Beam Search (e.g., 3, 5)")
+parser.add_argument("--alpha", type=float, default=0.75, help="Length penalty parameter for Beam Search")
 
 args = parser.parse_args()
 
@@ -26,7 +33,7 @@ args = parser.parse_args()
 # 2. Basic Configurations
 # ==========================================
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-TOKENIZER_FILE = "data/shared_tokenizer.json"
+TOKENIZER_FILE = "data/tokenizer/shared_tokenizer.json"
 TEST_FILE = "data/dataset/test_merged.txt" 
 
 D_MODEL = 256
@@ -58,7 +65,7 @@ model.eval()
 # ==========================================
 # 4. Translation Function
 # ==========================================
-def translate(sentence, target_lang="ja"):
+def translate(sentence, target_lang="ja", beam_width=3, max_length=MAX_LENGTH, alpha=0.75):
     tag = "<2ja>" if target_lang == "ja" else "<2en>"
     tag_id = tokenizer.token_to_id(tag)
     
@@ -70,21 +77,64 @@ def translate(sentence, target_lang="ja"):
     with torch.no_grad():
         enc_output = model.encoder(src_tensor, src_mask)
         
-    tgt_ids = [tokenizer.token_to_id("<s>")]
+    start_id = tokenizer.token_to_id("<s>")
+    eos_id = tokenizer.token_to_id("</s>")
     
-    for _ in range(MAX_LENGTH):
-        tgt_tensor = torch.tensor(tgt_ids, dtype=torch.long).unsqueeze(0).to(DEVICE)
-        tgt_mask = model.make_tgt_mask(tgt_tensor)
+    # Beams are stored as a list of Tuples: (sequence_list, log_score)
+    beams = [([start_id], 0.0)]
+    completed_beams = []
+    
+    for step in range(max_length):
+        new_beams = []
         
-        with torch.no_grad():
-            output = model.decoder(tgt_tensor, enc_output, src_mask, tgt_mask)
-            pred_token = output.argmax(2)[:, -1].item()
-            tgt_ids.append(pred_token)
-            
-            if pred_token == tokenizer.token_to_id("</s>"):
-                break
+        for seq, score in beams:
+            # If this beam is finished (EOS reached), save to completed_beams and skip
+            if seq[-1] == eos_id:
+                completed_beams.append((seq, score))
+                continue
                 
-    return tokenizer.decode(tgt_ids[1:-1])
+            tgt_tensor = torch.tensor(seq, dtype=torch.long).unsqueeze(0).to(DEVICE)
+            tgt_mask = model.make_tgt_mask(tgt_tensor)
+            
+            with torch.no_grad():
+                output = model.decoder(tgt_tensor, enc_output, src_mask, tgt_mask)
+                
+                # Extract logits for the latest token
+                logits = output[0, -1, :] 
+                log_probs = torch.log_softmax(logits, dim=-1)
+                
+                # Find the Top-K most probable next tokens for this sequence
+                topk_probs, topk_ids = torch.topk(log_probs, beam_width)
+                
+                for prob, token_id in zip(topk_probs, topk_ids):
+                    new_seq = seq + [token_id.item()]
+                    new_score = score + prob.item()
+                    new_beams.append((new_seq, new_score))
+                    
+        # Stop if no further beams can be generated
+        if len(new_beams) == 0:
+            break
+            
+        # Sort scores (descending) and keep only the top 'beam_width' number of beams
+        new_beams = sorted(new_beams, key=lambda x: x[1], reverse=True)[:beam_width]
+        beams = new_beams
+        
+    # Fallback in case MAX_LENGTH is reached without finding </s>
+    if len(completed_beams) == 0:
+        completed_beams = beams
+        
+    # Final score calculation function (prevents bias towards short sentences)
+    def calc_final_score(seq, score):
+        length = len(seq) - 1 # Exclude <s>
+        if length == 0: return -1e9
+        return score / (length ** alpha)
+        
+    # Select the beam with the best score
+    best_beam = max(completed_beams, key=lambda x: calc_final_score(x[0], x[1]))
+    best_seq = best_beam[0]
+    
+    # Decode back to text (The new Tokenizer Decoder will automatically reconstruct words!)
+    return tokenizer.decode(best_seq[1:-1], skip_special_tokens=True)
 
 # ==========================================
 # 5. Start Evaluation
@@ -94,21 +144,19 @@ if __name__ == "__main__":
     predictions = []
     sources = []
     
-    # --- Create a list to store sample outputs for the final summary ---
     sample_outputs = []
 
     with open(TEST_FILE, 'r', encoding='utf-8') as f:
         lines = f.readlines()
 
     print(f"Evaluation with test file {TEST_FILE}...")
+    print(f"Using Beam Search (Width={args.beam_width}, Alpha={args.alpha})")
     
     for i, line in enumerate(tqdm(lines)):
-        # 1. If the user specifies there is a header, skip the first line (index 0)
         if i == 0 and args.has_header: 
             continue
         
         parts = line.strip('\n').split('\t')
-
         max_col_needed = max(args.src_col, args.tgt_col)
 
         if len(parts) > max_col_needed:
@@ -117,29 +165,47 @@ if __name__ == "__main__":
         
             target_lang = "ja" if args.direction == "en-ja" else "en"
 
-            # Translate and clean up Metaspace tokens
-            pred_text = translate(source_text, target_lang=target_lang)
-            clean_pred = pred_text.replace('_', ' ').strip()
-
+            # Execute Beam Search
+            pred_text = translate(
+                source_text, 
+                target_lang=target_lang, 
+                beam_width=args.beam_width, 
+                alpha=args.alpha
+            )
+            
+            # ==========================================
+            # Post-processing (Simplified for Metaspace Tokenizer)
+            # ==========================================
+            clean_pred = pred_text.strip()
+            
             if target_lang == "ja":
-                clean_pred = clean_pred.replace(" ", "") # Remove spaces in the AI translation
-                truth_text = truth_text.replace(" ", "") # Remove spaces in the reference text
+                # Japanese doesn't use spaces, remove them safely
+                clean_pred = clean_pred.replace(" ", "")
+                truth_text = truth_text.replace(" ", "") 
+                # Remove accidental English characters
+                clean_pred = re.sub(r'[a-zA-Z]+', '', clean_pred)
 
-            # Remove extra spaces before punctuation marks
             if target_lang == "en":
-                # Use Regex to remove any whitespace (Space, Tab) preceding . , ? !
+                # 1. Clean up BPE artifacts if they somehow leak through
+                clean_pred = clean_pred.replace("@@ ", "")
+                
+                # NOTE: No more manual space removal needed! 
+                # Words like "acknow led ged" are already fixed by the tokenizer.
+                
+                # 2. Fix spacing around punctuation marks
                 clean_pred = re.sub(r'\s+([.,?!])', r'\1', clean_pred)
                 truth_text = re.sub(r'\s+([.,?!])', r'\1', truth_text)
                 
-                # Fix loose apostrophes (e.g., didn 't -> didn't)
+                # 3. Fix loose apostrophes (e.g., didn 't -> didn't)
                 clean_pred = clean_pred.replace(" '", "'").replace("' ", "'").strip()
-                truth_text = truth_text.replace(" '", "'").replace("' ", "'").strip()
+                
+                # 4. Clear redundant spaces
+                clean_pred = re.sub(r'\s+', ' ', clean_pred).strip()
             
             predictions.append(clean_pred)
             references.append(truth_text)
             sources.append(source_text)
 
-            # --- Store the first 5 pairs as examples ---
             if len(predictions) <= 5:
                 sample_outputs.append({
                     "id": len(predictions),
@@ -155,7 +221,6 @@ if __name__ == "__main__":
     print(f" Translation Examples (direction: {args.direction})")
     print("="*50)
     
-    # Show translation examples
     for sample in sample_outputs:
         print(f"[Sample no. {sample['id']}]")
         print(f"S (Source) : {sample['source']}")
@@ -168,8 +233,6 @@ if __name__ == "__main__":
     print("="*50)
 
     if args.direction == "en-ja":
-        # If MeCab fails, switch 'ja-mecab' to 'ja-sudachi' or 'intl'
-        # 'intl' works out of the box without installing extra DLL dependencies
         bleu_tok = 'intl' 
     else:
         bleu_tok = '13a'
@@ -198,20 +261,15 @@ if __name__ == "__main__":
     print("="*50)
     
     try:
-        # 1. Load the COMET model (using the standard wmt22-comet-da model)
         comet_model_path = download_model("Unbabel/wmt22-comet-da")
         comet_model = load_from_checkpoint(comet_model_path)
         
-        # 2. Format data for COMET (List of Dictionaries)
         comet_data = []
         for src, mt, ref in zip(sources, predictions, references):
             comet_data.append({"src": src, "mt": mt, "ref": ref})
             
-        # 3. Predict score (use gpus=1 if GPU is available; if not or VRAM is full, use gpus=0)
-        # Keep batch_size low to prevent CUDA Out of Memory (VRAM) issues
         comet_output = comet_model.predict(comet_data, batch_size=8, gpus=1)
         
-        # COMET scores are typically between 0.0 and 1.0 (closer to 1 is better)
         print(f"COMET Score : {comet_output.system_score:.4f}")
         
     except Exception as e:

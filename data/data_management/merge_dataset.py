@@ -3,8 +3,8 @@ import os
 # ==========================================
 # Configure Source and Target Files
 # ==========================================
-EN_FILE = "data/dataset/test.en"   # 👈 Point to English file
-JA_FILE = "data/dataset/test.ja"   # 👈 Point to Japanese file
+EN_FILE = "data/dataset/test.en"   # Point to English file
+JA_FILE = "data/dataset/test.ja"   # Point to Japanese file
 OUTPUT_FILE = "data/test_merged.txt" # Output file to be used
 
 def merge_files():
