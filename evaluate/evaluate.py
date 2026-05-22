@@ -1,0 +1,221 @@
+import torch
+import sacrebleu
+import argparse
+import re
+from tqdm import tqdm
+from tokenizers import Tokenizer
+from model.transformer import Transformer
+from comet import download_model, load_from_checkpoint
+
+# ==========================================
+# 1. Argument Parser Configuration
+# ==========================================
+parser = argparse.ArgumentParser(description="Evaluate Transformer MT Model")
+parser.add_argument("--direction", type=str, default="en-ja", choices=["en-ja", "ja-en"],
+                    help="Direction: en-ja (English->Japanese) or ja-en (Japanese->English)")
+parser.add_argument("--checkpoint", type=str, default="checkpoints/transformer_epoch_10.pt",
+                    help="File in Checkpoint Path")
+
+parser.add_argument("--src_col", type=int, default=0, help="Source column (0-indexed)")
+parser.add_argument("--tgt_col", type=int, default=1, help="Target/Reference column (0-indexed)")
+parser.add_argument("--has_header", action="store_true", help="Set this flag if the file contains a header row")
+
+args = parser.parse_args()
+
+# ==========================================
+# 2. Basic Configurations
+# ==========================================
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+TOKENIZER_FILE = "data/shared_tokenizer.json"
+TEST_FILE = "data/dataset/test_merged.txt" 
+
+D_MODEL = 256
+NUM_LAYERS = 6
+NUM_HEADS = 8
+D_FF = 1024
+MAX_LENGTH = 128
+
+# ==========================================
+# 3. Load Tokenizer and Model
+# ==========================================
+print(f"Preparing Model for translating: {args.direction}...")
+tokenizer = Tokenizer.from_file(TOKENIZER_FILE)
+vocab_size = tokenizer.get_vocab_size()
+pad_idx = tokenizer.token_to_id("<pad>")
+
+model = Transformer(
+    src_vocab_size=vocab_size, tgt_vocab_size=vocab_size,
+    src_pad_idx=pad_idx, tgt_pad_idx=pad_idx,
+    d_model=D_MODEL, num_layers=NUM_LAYERS, 
+    num_heads=NUM_HEADS, d_ff=D_FF
+).to(DEVICE)
+
+# Load Checkpoint
+checkpoint = torch.load(args.checkpoint, map_location=DEVICE)
+model.load_state_dict(checkpoint['model_state_dict'])
+model.eval()
+
+# ==========================================
+# 4. Translation Function
+# ==========================================
+def translate(sentence, target_lang="ja"):
+    tag = "<2ja>" if target_lang == "ja" else "<2en>"
+    tag_id = tokenizer.token_to_id(tag)
+    
+    src_tokens = tokenizer.encode(sentence).ids
+    src_ids = [tokenizer.token_to_id("<s>"), tag_id] + src_tokens + [tokenizer.token_to_id("</s>")]
+    src_tensor = torch.tensor(src_ids, dtype=torch.long).unsqueeze(0).to(DEVICE)
+    
+    src_mask = model.make_src_mask(src_tensor)
+    with torch.no_grad():
+        enc_output = model.encoder(src_tensor, src_mask)
+        
+    tgt_ids = [tokenizer.token_to_id("<s>")]
+    
+    for _ in range(MAX_LENGTH):
+        tgt_tensor = torch.tensor(tgt_ids, dtype=torch.long).unsqueeze(0).to(DEVICE)
+        tgt_mask = model.make_tgt_mask(tgt_tensor)
+        
+        with torch.no_grad():
+            output = model.decoder(tgt_tensor, enc_output, src_mask, tgt_mask)
+            pred_token = output.argmax(2)[:, -1].item()
+            tgt_ids.append(pred_token)
+            
+            if pred_token == tokenizer.token_to_id("</s>"):
+                break
+                
+    return tokenizer.decode(tgt_ids[1:-1])
+
+# ==========================================
+# 5. Start Evaluation
+# ==========================================
+if __name__ == "__main__":
+    references = []
+    predictions = []
+    sources = []
+    
+    # --- Create a list to store sample outputs for the final summary ---
+    sample_outputs = []
+
+    with open(TEST_FILE, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    print(f"Evaluation with test file {TEST_FILE}...")
+    
+    for i, line in enumerate(tqdm(lines)):
+        # 1. If the user specifies there is a header, skip the first line (index 0)
+        if i == 0 and args.has_header: 
+            continue
+        
+        parts = line.strip('\n').split('\t')
+
+        max_col_needed = max(args.src_col, args.tgt_col)
+
+        if len(parts) > max_col_needed:
+            source_text = parts[args.src_col] 
+            truth_text = parts[args.tgt_col]
+        
+            target_lang = "ja" if args.direction == "en-ja" else "en"
+
+            # Translate and clean up Metaspace tokens
+            pred_text = translate(source_text, target_lang=target_lang)
+            clean_pred = pred_text.replace('_', ' ').strip()
+
+            if target_lang == "ja":
+                clean_pred = clean_pred.replace(" ", "") # Remove spaces in the AI translation
+                truth_text = truth_text.replace(" ", "") # Remove spaces in the reference text
+
+            # Remove extra spaces before punctuation marks
+            if target_lang == "en":
+                # Use Regex to remove any whitespace (Space, Tab) preceding . , ? !
+                clean_pred = re.sub(r'\s+([.,?!])', r'\1', clean_pred)
+                truth_text = re.sub(r'\s+([.,?!])', r'\1', truth_text)
+                
+                # Fix loose apostrophes (e.g., didn 't -> didn't)
+                clean_pred = clean_pred.replace(" '", "'").replace("' ", "'").strip()
+                truth_text = truth_text.replace(" '", "'").replace("' ", "'").strip()
+            
+            predictions.append(clean_pred)
+            references.append(truth_text)
+            sources.append(source_text)
+
+            # --- Store the first 5 pairs as examples ---
+            if len(predictions) <= 5:
+                sample_outputs.append({
+                    "id": len(predictions),
+                    "source": source_text,
+                    "pred": clean_pred,
+                    "ref": truth_text
+                })
+
+# ==========================================
+# 6. Display All Results
+# ==========================================
+    print("\n" + "="*50)
+    print(f" Translation Examples (direction: {args.direction})")
+    print("="*50)
+    
+    # Show translation examples
+    for sample in sample_outputs:
+        print(f"[Sample no. {sample['id']}]")
+        print(f"S (Source) : {sample['source']}")
+        print(f"P (Pred)   : {sample['pred']}")
+        print(f"R (Ref)    : {sample['ref']}")
+        print("-" * 30)
+
+    print("\n" + "="*50)
+    print(f"Evaluation Metrics")
+    print("="*50)
+
+    if args.direction == "en-ja":
+        # If MeCab fails, switch 'ja-mecab' to 'ja-sudachi' or 'intl'
+        # 'intl' works out of the box without installing extra DLL dependencies
+        bleu_tok = 'intl' 
+    else:
+        bleu_tok = '13a'
+    
+    try:
+        bleu = sacrebleu.corpus_bleu(predictions, [references], tokenize=bleu_tok)
+        print(f"BLEU Score  (tok:{bleu_tok}): {bleu.score:.2f}")
+    except Exception as e:
+        print(f"BLEU calculation failed with {bleu_tok}: {e}")
+        print("Try using 'intl' tokenizer instead...")
+        bleu = sacrebleu.corpus_bleu(predictions, [references], tokenize='intl')
+        print(f"BLEU Score  (tokenizer:intl): {bleu.score:.2f}")
+    
+    chrf2 = sacrebleu.corpus_chrf(predictions, [references])
+    print(f"chrF2 Score : {chrf2.score:.2f}")
+
+    ter = sacrebleu.corpus_ter(predictions, [references])
+    print(f"TER Score   : {ter.score:.2f}")
+    print("="*50)
+
+    # ==========================================
+    # 7. COMET Score 
+    # ==========================================
+    print("\n" + "="*50)
+    print("Calculating COMET Score...")
+    print("="*50)
+    
+    try:
+        # 1. Load the COMET model (using the standard wmt22-comet-da model)
+        comet_model_path = download_model("Unbabel/wmt22-comet-da")
+        comet_model = load_from_checkpoint(comet_model_path)
+        
+        # 2. Format data for COMET (List of Dictionaries)
+        comet_data = []
+        for src, mt, ref in zip(sources, predictions, references):
+            comet_data.append({"src": src, "mt": mt, "ref": ref})
+            
+        # 3. Predict score (use gpus=1 if GPU is available; if not or VRAM is full, use gpus=0)
+        # Keep batch_size low to prevent CUDA Out of Memory (VRAM) issues
+        comet_output = comet_model.predict(comet_data, batch_size=8, gpus=1)
+        
+        # COMET scores are typically between 0.0 and 1.0 (closer to 1 is better)
+        print(f"COMET Score : {comet_output.system_score:.4f}")
+        
+    except Exception as e:
+        print(f"COMET calculation failed: {e}")
+        print("Help: If Error 'CUDA Out of Memory' appear, Please change gpus=1 to gpus=0")
+    
+    print("="*50)
