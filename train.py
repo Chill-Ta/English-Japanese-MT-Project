@@ -50,7 +50,7 @@ def train():
 # ==========================================
 # 1. Data Preparation
 # ==========================================
-    print("Downloading Dataset...")
+    print(f"Downloading Data file {TRAIN_FILE}")
     train_loader, pad_idx = get_dataloader(
         filepath=TRAIN_FILE,
         src_tok_path=SRC_TOKENIZER,
