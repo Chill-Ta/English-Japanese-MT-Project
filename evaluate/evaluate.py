@@ -14,27 +14,39 @@ from comet import download_model, load_from_checkpoint
 # ==========================================
 # 1. Argument Parser Configuration
 # ==========================================
-parser = argparse.ArgumentParser(description="Evaluate Transformer MT Model with Beam Search")
+parser = argparse.ArgumentParser
+
 parser.add_argument("--direction", type=str, default="en-ja", choices=["en-ja", "ja-en"],
                     help="Direction: en-ja (English->Japanese) or ja-en (Japanese->English)")
-parser.add_argument("--checkpoint", type=str, default="checkpoints/transformer_epoch_20.pt",
-                    help="File in Checkpoint Path")
-parser.add_argument("--src_col", type=int, default=0, help="Source column (0-indexed)")
-parser.add_argument("--tgt_col", type=int, default=1, help="Target/Reference column (0-indexed)")
+
+parser.add_argument("--src_col", type=int, default=None, help="Source column (0-indexed)")
+parser.add_argument("--tgt_col", type=int, default=None, help="Target/Reference column (0-indexed)")
 parser.add_argument("--has_header", action="store_true", help="Set this flag if the file contains a header row")
 
-# --- Add Arguments for Beam Search ---
+# --- Arguments for Beam Search ---
 parser.add_argument("--beam_width", type=int, default=3, help="Beam size for Beam Search (e.g., 3, 5)")
 parser.add_argument("--alpha", type=float, default=0.75, help="Length penalty parameter for Beam Search")
 
 args = parser.parse_args()
 
+if args.direction == "en-ja":
+    # EN-JA: source = English (Column 0), target = Japanese (Column 1)
+    args.src_col = 0 if args.src_col is None else args.src_col
+    args.tgt_col = 1 if args.tgt_col is None else args.tgt_col
+elif args.direction == "ja-en":
+    # JA-EN: source = Japanese (Column 1), target = English (Column 0)
+    args.src_col = 1 if args.src_col is None else args.src_col
+    args.tgt_col = 0 if args.tgt_col is None else args.tgt_col
+
+
 # ==========================================
-# 2. Basic Configurations
+# 2. Configurations
 # ==========================================
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 TOKENIZER_FILE = "data/tokenizer/shared_tokenizer.json"
-TEST_FILE = "data/dataset/test_merged.txt" 
+TEST_FILE = "data/dataset/test_merged.txt"
+MODEL = "checkpoints/transformer_epoch_5.pt"
+
 
 D_MODEL = 256
 NUM_LAYERS = 6
@@ -58,7 +70,7 @@ model = Transformer(
 ).to(DEVICE)
 
 # Load Checkpoint
-checkpoint = torch.load(args.checkpoint, map_location=DEVICE)
+checkpoint = torch.load(MODEL, map_location=DEVICE)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 

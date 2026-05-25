@@ -60,7 +60,7 @@ def train_tokenizer(data_path, save_path, vocab_size=32000, max_lines=1_000_000)
 
 if __name__ == "__main__":
     source_file = "data/dataset/en-ja.bicleaner05.txt"
-    output_file = "data/shared_tokenizer.json"
+    output_file = "data/tokenizer/shared_tokenizer.json"
     
     train_tokenizer(
         data_path=source_file, 
