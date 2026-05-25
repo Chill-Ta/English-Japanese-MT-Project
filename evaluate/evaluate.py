@@ -14,9 +14,9 @@ from comet import download_model, load_from_checkpoint
 # ==========================================
 # 1. Argument Parser Configuration
 # ==========================================
-parser = argparse.ArgumentParser
+parser = argparse.ArgumentParser(description="Evaluate Transformer MT Model")
 
-parser.add_argument("--direction", type=str, default="en-ja", choices=["en-ja", "ja-en"],
+parser.add_argument("--direction", type=str, default=None, choices=["en-ja", "ja-en"],
                     help="Direction: en-ja (English->Japanese) or ja-en (Japanese->English)")
 
 parser.add_argument("--src_col", type=int, default=None, help="Source column (0-indexed)")
@@ -28,6 +28,24 @@ parser.add_argument("--beam_width", type=int, default=3, help="Beam size for Bea
 parser.add_argument("--alpha", type=float, default=0.75, help="Length penalty parameter for Beam Search")
 
 args = parser.parse_args()
+
+if args.direction is None:
+    print("\n" + "="*40)
+    print("Please select translation direction:")
+    print("  [1] English - Japanese (en-ja)")
+    print("  [2] Japanese - English (ja-en)")
+    print("="*40)
+    
+    while True:
+        choice = input("Enter 1 or 2: ").strip()
+        if choice == '1':
+            args.direction = "en-ja"
+            break
+        elif choice == '2':
+            args.direction = "ja-en"
+            break
+        else:
+            print("Invalid choice. Please enter 1 or 2.")
 
 if args.direction == "en-ja":
     # EN-JA: source = English (Column 0), target = Japanese (Column 1)
