@@ -31,8 +31,8 @@ WARMUP_EPOCHS = 2          # gradually increase LR in two epochs, Loss up fix
 
 # dataset path
 TRAIN_FILE = "data/dataset/300Ktrain_clean.txt"
-SRC_TOKENIZER = "data/shared_tokenizer.json"
-TGT_TOKENIZER = "data/shared_tokenizer.json"
+SRC_TOKENIZER = "data/tokenizer/shared_tokenizer.json"
+TGT_TOKENIZER = "data/tokenizer/shared_tokenizer.json"
 
 # checkpoints setting
 RESUME_TRAINING = True
@@ -50,7 +50,7 @@ def train():
 # ==========================================
 # 1. Data Preparation
 # ==========================================
-    print(f"Downloading Data file {TRAIN_FILE}")
+    print(f"Downloading Data file from {TRAIN_FILE}")
     train_loader, pad_idx = get_dataloader(
         filepath=TRAIN_FILE,
         src_tok_path=SRC_TOKENIZER,
