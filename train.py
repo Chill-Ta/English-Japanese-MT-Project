@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import math
 import glob
-from torch.optim import Adam
+from torch.optim import AdamW
 from torch.amp import GradScaler, autocast
 import os
 # Change StepLR to LambdaLR for Warmup + Cosine Decay
@@ -78,7 +78,7 @@ def train():
     ).to(DEVICE)
 
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
-    optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
 
     # --- Warmup + Cosine Decay ---
     # Use Lambda (fix loss)
@@ -110,7 +110,11 @@ def train():
 
     if latest_checkpoint and os.path.exists(latest_checkpoint):
         print(f"Loading Checkpoint From: {latest_checkpoint}")
-        checkpoint = torch.load(latest_checkpoint, weights_only=True)
+        checkpoint = torch.load(latest_checkpoint)
+
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
         if 'scheduler_state_dict' in checkpoint:
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         if 'scaler_state_dict' in checkpoint:
