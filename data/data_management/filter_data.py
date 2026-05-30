@@ -1,6 +1,6 @@
 # filter_data.py
-INPUT  = "data/dataset/300Ktrain2_shuffled.txt"
-OUTPUT = "data/dataset/300Ktrain2_clean.txt"
+INPUT  = "data/dataset/300Ktrain3_shuffled.txt"
+OUTPUT = "data/dataset/300Ktrain3_clean.txt"
 
 MIN_SCORE  = 0.70   # Increased from 0.65 → filter out MT noise
 MAX_EN_WORDS = 100  # Prevent mid-sentence truncation

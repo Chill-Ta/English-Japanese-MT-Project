@@ -15,7 +15,7 @@ from model.transformer import Transformer
 # Hyperparameters Configuration
 # ==========================================
 BATCH_SIZE = 32
-TOTAL_EPOCHS = 10          
+TOTAL_EPOCHS = 20          
 LEARNING_RATE = 1e-3
 MAX_LENGTH = 128
 
@@ -30,7 +30,7 @@ D_FF = 1024
 WARMUP_EPOCHS = 2          # gradually increase LR in two epochs, Loss up fix
 
 # dataset path
-TRAIN_FILE = "data/dataset/300Ktrain_clean.txt"
+TRAIN_FILE = "data/dataset/300Ktrain3_clean.txt"
 SRC_TOKENIZER = "data/tokenizer/shared_tokenizer.json"
 TGT_TOKENIZER = "data/tokenizer/shared_tokenizer.json"
 

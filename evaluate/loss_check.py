@@ -31,7 +31,7 @@ def plot_training_loss():
                 epoch_loss_data.append((epoch, loss))
             
         except Exception as e:
-            print(f"⚠️ Unable to read file {file}: {e}")
+            print(f"Unable to read file {file}: {e}")
 
     # Sort data by Epoch in ascending order
     epoch_loss_data.sort(key=lambda x: x[0])
