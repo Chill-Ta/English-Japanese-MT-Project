@@ -15,7 +15,7 @@ from model.transformer import Transformer
 # Hyperparameters Configuration
 # ==========================================
 BATCH_SIZE = 32
-TOTAL_EPOCHS = 20          
+TOTAL_EPOCHS = 30          
 LEARNING_RATE = 1e-3
 MAX_LENGTH = 128
 
