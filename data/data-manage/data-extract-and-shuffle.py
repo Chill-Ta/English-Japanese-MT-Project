@@ -5,12 +5,12 @@ import time
 # ==========================================
 # 1. Configure File Paths and Target Line Range
 # ==========================================
-INPUT_FILE = "data/dataset/en-ja.bicleaner05.txt" 
-OUTPUT_FILE = "data/dataset/300train3_shuffled.txt"
+INPUT_FILE = "data/dataset/train-set/merged_th_en_corpus.csv" 
+OUTPUT_FILE = "data/dataset/train-set/th-en-corpus_extract.csv"
 
 # Set target rows to extract 
-START_ROW = 900001      # Starting line number
-END_ROW = 1200000        # Ending line number (set to None to extract until the end of the file)
+START_ROW = 1      # Starting line number
+END_ROW = 100001        # Ending line number (set to None to extract until the end of the file)
 
 def extract_and_shuffle():
     if END_ROW is not None:

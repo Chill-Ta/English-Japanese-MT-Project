@@ -19,12 +19,10 @@ def parse_args():
 
     parser.add_argument("--direction", type=str, default=None, choices=["en-ja", "ja-en"],
                         help="Direction: en-ja (English->Japanese) or ja-en (Japanese->English)")
-
     parser.add_argument("--src_col", type=int, default=None, help="Source column (0-indexed)")
     parser.add_argument("--tgt_col", type=int, default=None, help="Target/Reference column (0-indexed)")
     parser.add_argument("--has_header", action="store_true", help="Set this flag if the file contains a header row")
 
-    # --- Arguments for Beam Search ---
     parser.add_argument("--beam_width", type=int, default=3, help="Beam size for Beam Search")
     parser.add_argument("--alpha", type=float, default=0.75, help="Length penalty parameter")
     parser.add_argument("--rep_penalty", type=float, default=1.3, help="Repetition penalty ( > 1.0 to penalize)")
@@ -63,19 +61,19 @@ def parse_args():
 # ==========================================
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 TOKENIZER_FILE = "data/tokenizer/shared_tokenizer.json"
-TEST_FILE = "data/dataset/test_merged.txt"
-MODEL_PATH = "checkpoints/transformer_epoch_20.pt"
+TEST_FILE = "data/dataset/test-set/test_merged.txt"
+MODEL_PATH = "checkpoints/transformer_global_1_chunk_73.pt" # Update to your chunk checkpoint name
 
-D_MODEL = 256
+D_MODEL = 512
 NUM_LAYERS = 6
 NUM_HEADS = 8
-D_FF = 1024
+D_FF = 2048
 MAX_LENGTH = 128
 
 # ==========================================
 # 3. Translation Function
 # ==========================================
-def translate(sentence, model, tokenizer, target_lang="ja", beam_width=3, max_length=MAX_LENGTH, alpha=0.75, rep_penalty=1.3):
+def translate(sentence, model, tokenizer, target_lang="ja", beam_width=3, max_length=MAX_LENGTH, alpha=0.75, rep_penalty=1.5):
     tag = "<2ja>" if target_lang == "ja" else "<2en>"
     tag_id = tokenizer.token_to_id(tag)
     
@@ -85,12 +83,12 @@ def translate(sentence, model, tokenizer, target_lang="ja", beam_width=3, max_le
     
     src_mask = model.make_src_mask(src_tensor)
     
-    # Use inference_mode() instead of no_grad() for maximum speed
     with torch.inference_mode():
         enc_output = model.encoder(src_tensor, src_mask)
         
     start_id = tokenizer.token_to_id("<s>")
     eos_id = tokenizer.token_to_id("</s>")
+    pad_idx = tokenizer.token_to_id("<pad>")
     
     beams = [([start_id], 0.0)]
     completed_beams = []
@@ -110,13 +108,15 @@ def translate(sentence, model, tokenizer, target_lang="ja", beam_width=3, max_le
                 output = model.decoder(tgt_tensor, enc_output, src_mask, tgt_mask)
                 logits = output[0, -1, :] 
                 
-                # Implement Repetition Penalty logic
+                # Repetition Penalty logic with exclusion for special tokens
                 if rep_penalty != 1.0:
+                    special_tokens = {start_id, eos_id, pad_idx, tag_id}
                     for token_id in set(seq):
-                        if logits[token_id] > 0:
-                            logits[token_id] /= rep_penalty
-                        else:
-                            logits[token_id] *= rep_penalty
+                        if token_id not in special_tokens:
+                            if logits[token_id] > 0:
+                                logits[token_id] /= rep_penalty
+                            else:
+                                logits[token_id] *= rep_penalty
                 
                 log_probs = torch.log_softmax(logits, dim=-1)
                 topk_probs, topk_ids = torch.topk(log_probs, beam_width)
@@ -186,7 +186,6 @@ def main():
             truth_text = parts[args.tgt_col]
             target_lang = "ja" if args.direction == "en-ja" else "en"
 
-            # Execute Beam Search
             pred_text = translate(
                 sentence=source_text, model=model, tokenizer=tokenizer,
                 target_lang=target_lang, beam_width=args.beam_width, 
@@ -197,8 +196,12 @@ def main():
             clean_pred = pred_text.strip()
             
             if target_lang == "ja":
-                # Fix English period artifacts and manage spaces
                 clean_pred = clean_pred.replace(" .", "。").replace(".", "。").replace(" ", "")
+                
+                # Cleanup duplicated Japanese punctuations
+                clean_pred = re.sub(r'。+', '。', clean_pred)
+                clean_pred = re.sub(r'、+', '、', clean_pred)
+
                 truth_text = truth_text.replace(" ", "") 
                 clean_pred = re.sub(r'[a-zA-Z]+', '', clean_pred)
 
@@ -232,7 +235,7 @@ def main():
     try:
         bleu = sacrebleu.corpus_bleu(predictions, [references], tokenize=bleu_tok)
         print(f"BLEU Score  (tok:{bleu_tok}): {bleu.score:.2f}")
-    except Exception as e:
+    except Exception:
         bleu = sacrebleu.corpus_bleu(predictions, [references], tokenize='intl')
         print(f"BLEU Score  (tokenizer:intl): {bleu.score:.2f}")
     
@@ -247,7 +250,6 @@ def main():
         
         comet_data = [{"src": s, "mt": p, "ref": r} for s, p, r in zip(sources, predictions, references)]
         
-        # Dynamic GPU allocation
         num_gpus = 1 if torch.cuda.is_available() else 0
         comet_output = comet_model.predict(comet_data, batch_size=8, gpus=num_gpus)
         print(f"COMET Score : {comet_output.system_score:.4f}")

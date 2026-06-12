@@ -48,4 +48,4 @@ def verify_tokenizer(file_path):
     print(f"   Tokens : {ja_encoded.tokens}")
 
 if __name__ == "__main__":
-    verify_tokenizer("data/shared_tokenizer.json")
+    verify_tokenizer("data/tokenizer/shared_tokenizer.json")

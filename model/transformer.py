@@ -10,12 +10,11 @@ class Transformer(nn.Module):
         tgt_vocab_size: int, 
         src_pad_idx: int, 
         tgt_pad_idx: int, 
-        d_model: int = 256,   # Adjusted to match the value in train.py
+        d_model: int = 512,   # Adjusted to match the value in train.py
         num_layers: int = 6, 
         num_heads: int = 8,   # Adjusted to align with d_model=256 (256/8=32 per head)
         # Fix: d_ff should be 4x of d_model (standard), not 16x
-        # d_model=256 -> d_ff=1024 (matches train.py)
-        d_ff: int = 1024, 
+        d_ff: int = 2048, 
         dropout: float = 0.1
     ):
         super().__init__()
