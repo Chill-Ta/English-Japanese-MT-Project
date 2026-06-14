@@ -36,10 +36,6 @@ CHECKPOINT_DIR = "checkpoints"
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def count_lines(filepath):
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return sum(1 for _ in f)
-
 def train():
     print(f"Prepare for Training on device: {DEVICE}")
 
@@ -93,8 +89,6 @@ def train():
     start_global_epoch = 0
     start_chunk_idx = 0
     global_step = 0
-    
-    # [NEW] Variable to track exactly which batch we stopped at
     start_batch_idx = -1 
 
     if RESUME_TRAINING:
@@ -116,15 +110,16 @@ def train():
             start_chunk_idx = checkpoint.get('chunk_idx', 0)
             global_step = checkpoint.get('global_step', 0)
             
-            # [FIXED] Detect if it's a Mid-Chunk save and prepare to fast-forward
-            if "mid_chunk" in os.path.basename(latest_checkpoint):
+            # Check if it is an intermediate checkpoint (new batch style or old mid_chunk style)
+            is_intermediate = "batch" in os.path.basename(latest_checkpoint) or "mid_chunk" in os.path.basename(latest_checkpoint)
+            
+            if is_intermediate:
                 start_batch_idx = checkpoint.get('batch_idx', -1)
                 if start_batch_idx != -1:
-                    print(f"   -> Mid-Chunk Detected Dataloader will fast-forward to Batch {start_batch_idx + 1}")
+                    print(f"   -> Intermediate Checkpoint Detected! Dataloader will fast-forward to Batch {start_batch_idx + 1}")
                 else:
-                    print(f"   -> Old Mid-Chunk Save Detected (No Batch Info). Will re-run this chunk from Batch 0.")
+                    print(f"   -> Old Intermediate Save Detected (No Batch Info). Will re-run this chunk from Batch 0.")
             else:
-                # Normal End-of-Chunk resume logic
                 start_chunk_idx += 1
                 global_step += 1
                 if start_chunk_idx >= TOTAL_CHUNKS:
@@ -154,12 +149,9 @@ def train():
         for chunk_idx in range(start_chunk_idx, TOTAL_CHUNKS):
             current_file = chunk_files[chunk_idx]
             
-            total_lines = count_lines(current_file)
-            total_batches_in_file = math.ceil(total_lines / BATCH_SIZE)
-            midpoint_batch = total_batches_in_file // 2
-            
-            print(f"\n   Processing File: {os.path.basename(current_file)}")
-            print(f"     [Trainset info: {total_lines:,} lines | Total batch: {total_batches_in_file:,} batches | Midpoint saving at batch: {midpoint_batch:,}]")
+            print(f"\n---> Processing File: {os.path.basename(current_file)}")
+            print(f"     [Condition: Local Epoch {local_epoch_display}/{GLOBAL_EPOCHS}]")
+            print(f"     [Saving intermediate checkpoint every 1000 batches]")
             
             train_loader, _ = get_dataloader(
                 filepath=current_file, src_tok_path=SRC_TOKENIZER,
@@ -173,15 +165,15 @@ def train():
 
             for batch_idx, (src, tgt) in enumerate(train_loader):
                 
-                # [NEW] Fast-forward mechanism: Skip batches if we resumed from a mid-chunk
+                # Fast-forward mechanism
                 if start_batch_idx != -1:
                     if batch_idx <= start_batch_idx:
                         if batch_idx % 1000 == 0:
                             print(f"Fast-forwarding Dataloader... skipping batch {batch_idx}/{start_batch_idx}")
-                        continue  # Skip training for this batch completely
+                        continue
                     else:
-                        print(f"\n Resume training successful at Batch {batch_idx}!\n")
-                        start_batch_idx = -1  # Reset so it doesn't affect future chunks
+                        print(f"\nResumed training successfully at Batch {batch_idx}!\n")
+                        start_batch_idx = -1 
 
                 src = src.to(DEVICE)
                 tgt = tgt.to(DEVICE)
@@ -209,30 +201,36 @@ def train():
                 total_loss += (loss.item() * ACCUMULATION_STEPS)
                 batch_count += 1
 
-                # [UPDATED] Print progress every 200 batches OR immediately after resuming
-                if batch_idx % 200 == 0 or batch_idx == (checkpoint.get('batch_idx', -1) if RESUME_TRAINING and "mid_chunk" in os.path.basename(latest_checkpoint) else -1) + 1:
+                # Print progress every 200 batches or immediately after resuming
+                if batch_idx % 200 == 0 or batch_idx == (checkpoint.get('batch_idx', -1) if RESUME_TRAINING and is_intermediate else -1) + 1:
                     current_lr = scheduler.get_last_lr()[0]
                     print(f"  [Epoch {local_epoch_display:02d} | Chunk {chunk_idx+1:02d}] Batch {batch_idx:04d} | Loss: {(loss.item()*ACCUMULATION_STEPS):.4f} | LR: {current_lr:.7f}")
 
-
-                # [UPDATED] Save the exact batch index so the fast-forward knows where to stop next time
-                if batch_idx == midpoint_batch and batch_idx > 0:
-                    mid_loss = total_loss / batch_count
-                    checkpoint_name = f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}_mid_chunk.pt"
+                # Save intermediate checkpoint exactly every 1000 batches
+                if batch_idx % 1000 == 0 and batch_idx > 0:
+                    inter_loss = total_loss / batch_count
+                    checkpoint_name = f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}_batch_{batch_idx}.pt"
                     checkpoint_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
                     
                     torch.save({
                         'global_epoch': epoch,
                         'chunk_idx': chunk_idx,
-                        'batch_idx': batch_idx,  # <--- FIXED: Now saves the exact step!
+                        'batch_idx': batch_idx,
                         'global_step': global_step,
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'scheduler_state_dict': scheduler.state_dict(),
                         'scaler_state_dict': scaler.state_dict(),
-                        'loss': mid_loss,
+                        'loss': inter_loss,
                     }, checkpoint_path)
-                    print(f"\n [MIDPOINT REACHED] Saved Mid-Chunk Checkpoint: {checkpoint_name}\n")
+                    print(f"\n Saved Checkpoint: {checkpoint_name}\n")
+
+                    # Delete the previous 1000-batch checkpoint to prevent disk space bloat
+                    prev_batch_idx = batch_idx - 1000
+                    if prev_batch_idx > 0:
+                        old_inter = os.path.join(CHECKPOINT_DIR, f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}_batch_{prev_batch_idx}.pt")
+                        if os.path.exists(old_inter):
+                            os.remove(old_inter)
 
             avg_loss = total_loss / batch_count if batch_count > 0 else 0
             
@@ -247,6 +245,7 @@ def train():
             del train_loader
             gc.collect()
 
+            # End of chunk final checkpoint
             checkpoint_name = f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}.pt"
             checkpoint_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
             torch.save({
@@ -261,6 +260,15 @@ def train():
             }, checkpoint_path)
             print(f"Saved Checkpoint: {checkpoint_name}\n")
 
+            # Clean up ALL intermediate checkpoints for this chunk once the full chunk is saved
+            old_inters = glob.glob(os.path.join(CHECKPOINT_DIR, f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}_batch_*.pt"))
+            for old_file in old_inters:
+                try:
+                    os.remove(old_file)
+                except OSError:
+                    pass
+            
+            # Also clean up old mid_chunk files just in case they exist from previous versions
             old_mid = os.path.join(CHECKPOINT_DIR, f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}_mid_chunk.pt")
             if os.path.exists(old_mid):
                 os.remove(old_mid)
