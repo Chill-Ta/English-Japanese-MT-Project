@@ -201,8 +201,11 @@ def train():
                 total_loss += (loss.item() * ACCUMULATION_STEPS)
                 batch_count += 1
 
-                # Print progress every 200 batches or immediately after resuming
-                if batch_idx % 200 == 0 or batch_idx == (checkpoint.get('batch_idx', -1) if RESUME_TRAINING and is_intermediate else -1) + 1:
+                # [UPDATED] Print progress every 200 batches, immediately after resuming, or immediately after saving
+                just_saved = (batch_idx > 0 and (batch_idx - 1) % 1000 == 0)
+                just_resumed = batch_idx == (checkpoint.get('batch_idx', -1) if RESUME_TRAINING and 'is_intermediate' in locals() and is_intermediate else -1) + 1
+
+                if batch_idx % 200 == 0 or just_resumed or just_saved:
                     current_lr = scheduler.get_last_lr()[0]
                     print(f"  [Epoch {local_epoch_display:02d} | Chunk {chunk_idx+1:02d}] Batch {batch_idx:04d} | Loss: {(loss.item()*ACCUMULATION_STEPS):.4f} | LR: {current_lr:.7f}")
 
