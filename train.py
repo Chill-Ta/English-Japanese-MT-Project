@@ -36,8 +36,16 @@ CHECKPOINT_DIR = "checkpoints"
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# ==========================================
+# Helper Function: Fast Line Counter
+# ==========================================
+def count_lines(filepath):
+    """Quickly count the total number of lines in a file to calculate total batches."""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        return sum(1 for _ in f)
+
 def train():
-    print(f"Prepare for Training on device: {DEVICE}")
+    print(f"Preparing for Training on device: {DEVICE}")
 
     if not os.path.exists(CHECKPOINT_DIR):
         os.makedirs(CHECKPOINT_DIR)
@@ -60,7 +68,7 @@ def train():
     temp_tok = Tokenizer.from_file(SRC_TOKENIZER)
     pad_idx = temp_tok.token_to_id("<pad>")
 
-    print("Create Transformer Model...")
+    print("Creating Transformer Model...")
     model = Transformer(
         src_vocab_size=VOCAB_SIZE, tgt_vocab_size=VOCAB_SIZE,
         src_pad_idx=pad_idx, tgt_pad_idx=pad_idx,
@@ -110,7 +118,7 @@ def train():
             start_chunk_idx = checkpoint.get('chunk_idx', 0)
             global_step = checkpoint.get('global_step', 0)
             
-            # Check if it is an intermediate checkpoint (new batch style or old mid_chunk style)
+            # Detect intermediate checkpoints (either every 1000 batches or the old mid_chunk style)
             is_intermediate = "batch" in os.path.basename(latest_checkpoint) or "mid_chunk" in os.path.basename(latest_checkpoint)
             
             if is_intermediate:
@@ -143,15 +151,16 @@ def train():
 
     for epoch in range(start_global_epoch, GLOBAL_EPOCHS):
         local_epoch_display = epoch + 1
-        
-        print(f"GLOBAL_EPOCH [{epoch+1}/{GLOBAL_EPOCHS}]")
-        
+               
         for chunk_idx in range(start_chunk_idx, TOTAL_CHUNKS):
             current_file = chunk_files[chunk_idx]
             
-            print(f"\n---> Processing File: {os.path.basename(current_file)}")
-            print(f"     [Condition: Local Epoch {local_epoch_display}/{GLOBAL_EPOCHS}]")
-            print(f"     [Saving intermediate checkpoint every 1000 batches]")
+            total_lines = count_lines(current_file)
+            total_batches_in_file = math.ceil(total_lines / BATCH_SIZE)
+            
+            print(f" [Processing File: {os.path.basename(current_file)}]")
+            print(f" [Local Epoch: {local_epoch_display}/{GLOBAL_EPOCHS}]")
+            print(f" [Total Batches: {total_batches_in_file:,} | Saving every 1000 batches]")
             
             train_loader, _ = get_dataloader(
                 filepath=current_file, src_tok_path=SRC_TOKENIZER,
@@ -165,14 +174,14 @@ def train():
 
             for batch_idx, (src, tgt) in enumerate(train_loader):
                 
-                # Fast-forward mechanism
+                # Fast-forward Dataloader if resuming from an intermediate checkpoint
                 if start_batch_idx != -1:
                     if batch_idx <= start_batch_idx:
                         if batch_idx % 1000 == 0:
                             print(f"Fast-forwarding Dataloader... skipping batch {batch_idx}/{start_batch_idx}")
                         continue
                     else:
-                        print(f"\nResumed training successfully at Batch {batch_idx}!\n")
+                        print(f"\n Resume training successfully at Batch {batch_idx}!\n")
                         start_batch_idx = -1 
 
                 src = src.to(DEVICE)
@@ -201,15 +210,24 @@ def train():
                 total_loss += (loss.item() * ACCUMULATION_STEPS)
                 batch_count += 1
 
-                # [UPDATED] Print progress every 200 batches, immediately after resuming, or immediately after saving
-                just_saved = (batch_idx > 0 and (batch_idx - 1) % 1000 == 0)
+                # ==========================================
+                # Print Progress
+                # ==========================================
+                # Print immediately after a 1000-batch save (e.g., at batch 1001, 2001)
+                just_saved = (batch_idx > 1 and (batch_idx - 1) % 1000 == 0)
+                
+                # Print immediately upon resuming from a checkpoint
                 just_resumed = batch_idx == (checkpoint.get('batch_idx', -1) if RESUME_TRAINING and 'is_intermediate' in locals() and is_intermediate else -1) + 1
-
-                if batch_idx % 200 == 0 or just_resumed or just_saved:
+                
+                # Condition: Print every 200 batches (excluding batch 0), OR right after resume/save
+                if (batch_idx > 0 and batch_idx % 200 == 0) or just_resumed or just_saved:
                     current_lr = scheduler.get_last_lr()[0]
-                    print(f"  [Epoch {local_epoch_display:02d} | Chunk {chunk_idx+1:02d}] Batch {batch_idx:04d} | Loss: {(loss.item()*ACCUMULATION_STEPS):.4f} | LR: {current_lr:.7f}")
+                    print(f"  [Epoch {local_epoch_display:02d} | Chunk {chunk_idx+1:02d}] Batch {batch_idx:04d}/{total_batches_in_file} | Loss: {(loss.item()*ACCUMULATION_STEPS):.4f} | LR: {current_lr:.7f}")
 
-                # Save intermediate checkpoint exactly every 1000 batches
+                # ==========================================
+                # Save Intermediate Checkpoint
+                # ==========================================
+                # Save exactly at every 1000 batches
                 if batch_idx % 1000 == 0 and batch_idx > 0:
                     inter_loss = total_loss / batch_count
                     checkpoint_name = f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}_batch_{batch_idx}.pt"
@@ -226,19 +244,22 @@ def train():
                         'scaler_state_dict': scaler.state_dict(),
                         'loss': inter_loss,
                     }, checkpoint_path)
-                    print(f"\n Saved Checkpoint: {checkpoint_name}\n")
+                    print(f"\nSaved Checkpoint: {checkpoint_name}\n")
 
-                    # Delete the previous 1000-batch checkpoint to prevent disk space bloat
+                    # Clean up the previous intermediate checkpoint (1000 batches ago) to save space
                     prev_batch_idx = batch_idx - 1000
                     if prev_batch_idx > 0:
                         old_inter = os.path.join(CHECKPOINT_DIR, f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}_batch_{prev_batch_idx}.pt")
                         if os.path.exists(old_inter):
                             os.remove(old_inter)
 
+            # ==========================================
+            # End of Chunk Operations
+            # ==========================================
             avg_loss = total_loss / batch_count if batch_count > 0 else 0
             
             print("-" * 50)
-            print(f"SUMMARY: Finished Epoch [{local_epoch_display}/{GLOBAL_EPOCHS}] for {os.path.basename(current_file)}")
+            print(f"SUMMARY: Finished Local_Epoch [{local_epoch_display}/{GLOBAL_EPOCHS}] for {os.path.basename(current_file)}")
             print(f"   Average Loss: {avg_loss:.4f}")
             print("-" * 50)
 
@@ -248,7 +269,7 @@ def train():
             del train_loader
             gc.collect()
 
-            # End of chunk final checkpoint
+            # Save the final checkpoint for the completed chunk
             checkpoint_name = f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}.pt"
             checkpoint_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
             torch.save({
@@ -263,7 +284,7 @@ def train():
             }, checkpoint_path)
             print(f"Saved Checkpoint: {checkpoint_name}\n")
 
-            # Clean up ALL intermediate checkpoints for this chunk once the full chunk is saved
+            # Clean up ALL intermediate batch checkpoints for this chunk once the full chunk is saved
             old_inters = glob.glob(os.path.join(CHECKPOINT_DIR, f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}_batch_*.pt"))
             for old_file in old_inters:
                 try:
@@ -271,11 +292,12 @@ def train():
                 except OSError:
                     pass
             
-            # Also clean up old mid_chunk files just in case they exist from previous versions
+            # Clean up old mid_chunk files (backward compatibility with previous version)
             old_mid = os.path.join(CHECKPOINT_DIR, f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}_mid_chunk.pt")
             if os.path.exists(old_mid):
                 os.remove(old_mid)
 
+        # Reset chunk index for the next global epoch
         start_chunk_idx = 0
 
     print("\nTraining completed for all epochs!")
