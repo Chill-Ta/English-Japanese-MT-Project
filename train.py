@@ -217,10 +217,12 @@ def train():
                 just_saved = (batch_idx > 1 and (batch_idx - 1) % 1000 == 0)
                 
                 # Print immediately upon resuming from a checkpoint
-                just_resumed = batch_idx == (checkpoint.get('batch_idx', -1) if RESUME_TRAINING and 'is_intermediate' in locals() and is_intermediate else -1) + 1
+                just_resumed = batch_idx == (RESUME_TRAINING and 'is_intermediate' in locals() and is_intermediate and batch_idx == checkpoint.get('batch_idx', -1) + 1)
+
+                is_first_batch = (batch_idx == 1)
                 
                 # Condition: Print every 200 batches (excluding batch 0), OR right after resume/save
-                if (batch_idx > 0 and batch_idx % 200 == 0) or just_resumed or just_saved:
+                if batch_idx > 0 and (batch_idx % 200 == 0 or just_resumed or just_saved or is_first_batch):
                     current_lr = scheduler.get_last_lr()[0]
                     print(f"  [Epoch {local_epoch_display:02d} | Chunk {chunk_idx+1:02d}] Batch {batch_idx:04d}/{total_batches_in_file} | Loss: {(loss.item()*ACCUMULATION_STEPS):.4f} | LR: {current_lr:.7f}")
 
