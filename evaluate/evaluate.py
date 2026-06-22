@@ -62,7 +62,7 @@ def parse_args():
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 TOKENIZER_FILE = "data/tokenizer/shared_tokenizer.json"
 TEST_FILE = "data/dataset/test-set/test_merged.txt"
-MODEL_PATH = "checkpoints/transformer_global_1_chunk_73.pt" # Update to your chunk checkpoint name
+MODEL_PATH = "checkpoints/transformer_epoch_10_chunk_3.pt" # Update to your chunk checkpoint name
 
 D_MODEL = 512
 NUM_LAYERS = 6

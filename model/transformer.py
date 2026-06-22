@@ -39,19 +39,14 @@ class Transformer(nn.Module):
         mask = (src == self.src_pad_idx).unsqueeze(1).unsqueeze(2) # Shape: [N, 1, 1, src_len]
         return mask.masked_fill(mask, float('-inf')).float()
 
+        # Update the make_tgt_mask function in Transformer class
     def make_tgt_mask(self, tgt: torch.Tensor) -> torch.Tensor:
-        N, tgt_len = tgt.shape
-        
-        # 1. Pad Mask (hide <pad> tokens)
+        # Only generate Pad Mask (hide <pad> tokens). 
+        # Causal Mask is now handled natively by FlashAttention via is_causal=True.
         pad_mask = (tgt == self.tgt_pad_idx).unsqueeze(1).unsqueeze(2)
         
-        # 2. Causal Mask (hide future tokens to prevent the Decoder from looking ahead at the answer)
-        causal_mask = torch.tril(torch.ones((tgt_len, tgt_len), device=tgt.device)).type(torch.bool)
-        causal_mask = ~causal_mask.unsqueeze(0).unsqueeze(0)
-        
-        # Combine both masks
-        mask = pad_mask | causal_mask
-        return mask.float().masked_fill(mask, float('-inf'))
+        # Return the boolean/float mask required for pad ignoring
+        return pad_mask.masked_fill(pad_mask, float('-inf')).float()
 
     def forward(self, src, tgt):
         # Create masks before feeding into the model

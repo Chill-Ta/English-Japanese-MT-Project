@@ -14,15 +14,17 @@ class DecoderLayer(nn.Module):
         self.norm3 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
 
+    # Update the forward function in DecoderLayer class
     def forward(self, x, enc_output, src_mask, tgt_mask):
         # 1. Masked Self-Attention
         nx = self.norm1(x)
-        attn_out = self.self_attn(nx, nx, nx, tgt_mask)
+        # Enable is_causal=True to trigger native FlashAttention for decoder
+        attn_out = self.self_attn(nx, nx, nx, mask=None, is_causal=True)
         x = x + self.dropout(attn_out)
         
-        # 2. Cross-Attention (Q from Decoder, K and V from Encoder)
+        # 2. Cross-Attention (is_causal is False by default here)
         nx = self.norm2(x)
-        attn_out = self.cross_attn(nx, enc_output, enc_output, src_mask)
+        attn_out = self.cross_attn(nx, enc_output, enc_output, mask=src_mask)
         x = x + self.dropout(attn_out)
         
         # 3. Feed Forward

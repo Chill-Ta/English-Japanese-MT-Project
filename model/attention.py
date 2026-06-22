@@ -39,24 +39,22 @@ class MultiHeadAttention(nn.Module):
         self.W_o = nn.Linear(d_model, d_model)
         self.dropout_p = dropout
 
-    def forward(self, q, k, v, mask=None):
+    # Update the forward function in MultiHeadAttention class
+    def forward(self, q, k, v, mask=None, is_causal=False):
         batch_size = q.size(0)
         
-        # Linear projection & Reshape to [batch_size, num_heads, seq_len, d_k]
         q = self.W_q(q).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
         k = self.W_k(k).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
         v = self.W_v(v).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
         
-        # Use FlashAttention via scaled_dot_product_attention (PyTorch 2.0+)
-        # Improves efficiency and speed when computing the Attention Matrix
+        # Pass the is_causal flag directly to PyTorch's optimized backend
         attn_output = F.scaled_dot_product_attention(
             q, k, v, 
             attn_mask=mask, 
             dropout_p=self.dropout_p if self.training else 0.0,
-            is_causal=False # We will handle the Causal mechanism via the mask ourselves
+            is_causal=is_causal
         )
         
-        # Reshape back to [batch_size, seq_len, d_model]
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
         return self.W_o(attn_output)
 

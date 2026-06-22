@@ -75,8 +75,10 @@ def train():
         d_model=D_MODEL, num_layers=NUM_LAYERS,
         num_heads=NUM_HEADS, d_ff=D_FF, dropout=0.1
     ).to(DEVICE)
-
-    criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
+    
+    # Added label_smoothing to prevent the model from becoming overconfident,
+    # which helps mitigate literal translation and idiomatic blindness.
+    criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.1)
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
 
     TOTAL_STEPS = TOTAL_CHUNKS * GLOBAL_EPOCHS

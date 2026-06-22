@@ -8,16 +8,23 @@ from tokenizers.normalizers import NFKC
 def batch_iterator(data_path, max_lines=1_000_000):
     """
     Generator function to read and randomly sample lines from the dataset.
-    This ensures the tokenizer learns from the entire 21M dataset distribution
-    rather than just the first chunk.
+    Uses Reservoir Sampling to prevent Out of Memory (OOM) errors when 
+    processing extremely large datasets (e.g., 20M+ lines).
     """
-    print("Reading dataset for tokenizer sampling. This might take a moment...")
+    print(f"Reading and sampling dataset using Reservoir Sampling. Target: {max_lines:,} lines...")
+    sampled_lines = []
+    
     with open(data_path, "r", encoding="utf-8") as f:
-        all_lines = f.readlines()
-    
-    # Randomly sample lines to ensure diverse vocabulary coverage
-    sampled_lines = random.sample(all_lines, min(max_lines, len(all_lines)))
-    
+        for i, line in enumerate(f):
+            # Fill the reservoir up to max_lines
+            if i < max_lines:
+                sampled_lines.append(line)
+            else:
+                # Randomly replace elements with decreasing probability
+                j = random.randint(0, i)
+                if j < max_lines:
+                    sampled_lines[j] = line
+
     count = 0
     for line in sampled_lines:
         parts = line.strip('\n').split('\t')
@@ -60,13 +67,8 @@ def train_tokenizer(data_path, save_path, vocab_size=50000, max_lines=1_000_000)
     print(f"Saved Tokenizer at: {save_path}")
 
 if __name__ == "__main__":
-    # Point this to your full 21M dataset file (before chunking)
-    source_file = "data/dataset/train-set/en-ja/resources/en-ja.bicleaner05.txt"
-    output_file = "data/tokenizer/shared_tokenizer.json"
+    DATA_PATH = "data/dataset/train-set/en-ja/resources/en-ja_extracted_filtered.txt"
+    SAVE_PATH = "data/tokenizer/shared_tokenizer.json"
     
-    train_tokenizer(
-        data_path=source_file, 
-        save_path=output_file, 
-        vocab_size=50000, 
-        max_lines=1_000_000
-    )
+    os.makedirs(os.path.dirname(SAVE_PATH), exist_ok=True)
+    train_tokenizer(DATA_PATH, SAVE_PATH)
