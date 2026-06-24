@@ -16,10 +16,10 @@ class DecoderLayer(nn.Module):
 
     # Update the forward function in DecoderLayer class
     def forward(self, x, enc_output, src_mask, tgt_mask):
-        # 1. Masked Self-Attention
+        # 1. Masked Self-Attention (tgt_mask contains combined causal + pad mask)
         nx = self.norm1(x)
-        # Enable is_causal=True to trigger native FlashAttention for decoder
-        attn_out = self.self_attn(nx, nx, nx, mask=None, is_causal=True)
+        # is_causal=False because tgt_mask already includes the causal mask
+        attn_out = self.self_attn(nx, nx, nx, mask=tgt_mask, is_causal=False)
         x = x + self.dropout(attn_out)
         
         # 2. Cross-Attention (is_causal is False by default here)

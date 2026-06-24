@@ -12,7 +12,7 @@ class Transformer(nn.Module):
         tgt_pad_idx: int, 
         d_model: int = 512,   # Adjusted to match the value in train.py
         num_layers: int = 6, 
-        num_heads: int = 8,   # Adjusted to align with d_model=256 (256/8=32 per head)
+        num_heads: int = 8,   # 512/8 = 64 dims per head
         # Fix: d_ff should be 4x of d_model (standard), not 16x
         d_ff: int = 2048, 
         dropout: float = 0.1
@@ -39,14 +39,34 @@ class Transformer(nn.Module):
         mask = (src == self.src_pad_idx).unsqueeze(1).unsqueeze(2) # Shape: [N, 1, 1, src_len]
         return mask.masked_fill(mask, float('-inf')).float()
 
-        # Update the make_tgt_mask function in Transformer class
     def make_tgt_mask(self, tgt: torch.Tensor) -> torch.Tensor:
-        # Only generate Pad Mask (hide <pad> tokens). 
-        # Causal Mask is now handled natively by FlashAttention via is_causal=True.
-        pad_mask = (tgt == self.tgt_pad_idx).unsqueeze(1).unsqueeze(2)
+        """
+        Build a combined causal + pad mask for the decoder self-attention.
+        Returns shape [N, 1, tgt_len, tgt_len] with 0.0 = attend, -inf = block.
         
-        # Return the boolean/float mask required for pad ignoring
-        return pad_mask.masked_fill(pad_mask, float('-inf')).float()
+        This combined approach is required because PyTorch's
+        scaled_dot_product_attention forbids passing both attn_mask AND
+        is_causal=True simultaneously.
+        """
+        tgt_len = tgt.size(1)
+        
+        # 1. Causal mask: lower-triangular (attend to past + current, block future)
+        #    Shape: [tgt_len, tgt_len]
+        causal_mask = torch.triu(
+            torch.ones(tgt_len, tgt_len, device=tgt.device), diagonal=1
+        ).bool()  # True = BLOCK
+        
+        # 2. Pad mask: block attention to/from <pad> positions
+        #    Shape: [N, 1, 1, tgt_len] -> broadcasts over query positions
+        pad_mask = (tgt == self.tgt_pad_idx).unsqueeze(1).unsqueeze(2)  # True = BLOCK
+        
+        # 3. Combine: block if EITHER causal or pad says block
+        #    causal_mask broadcasts from [tgt_len, tgt_len] to [N, 1, tgt_len, tgt_len]
+        #    pad_mask broadcasts from [N, 1, 1, tgt_len] to [N, 1, tgt_len, tgt_len]
+        combined = causal_mask.unsqueeze(0).unsqueeze(0) | pad_mask
+        
+        # 4. Convert to additive float mask: 0.0 = attend, -inf = block
+        return combined.float().masked_fill(combined, float('-inf'))
 
     def forward(self, src, tgt):
         # Create masks before feeding into the model

@@ -26,6 +26,10 @@ def parse_args():
     parser.add_argument("--beam_width", type=int, default=3, help="Beam size for Beam Search")
     parser.add_argument("--alpha", type=float, default=0.75, help="Length penalty parameter")
     parser.add_argument("--rep_penalty", type=float, default=1.3, help="Repetition penalty ( > 1.0 to penalize)")
+    parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for softmax scaling (< 1.0 = sharper, > 1.0 = smoother)")
+
+    parser.add_argument("--export", action="store_true", help="Export source/prediction/reference to TSV for MQM analysis")
+    parser.add_argument("--export_path", type=str, default="evaluate/mt_output_for_mqm.tsv", help="Path for export TSV file")
 
     args = parser.parse_args()
 
@@ -73,7 +77,7 @@ MAX_LENGTH = 128
 # ==========================================
 # 3. Translation Function
 # ==========================================
-def translate(sentence, model, tokenizer, target_lang="ja", beam_width=3, max_length=MAX_LENGTH, alpha=0.75, rep_penalty=1.5):
+def translate(sentence, model, tokenizer, target_lang="ja", beam_width=3, max_length=MAX_LENGTH, alpha=0.75, rep_penalty=1.5, temperature=1.0):
     tag = "<2ja>" if target_lang == "ja" else "<2en>"
     tag_id = tokenizer.token_to_id(tag)
     
@@ -101,7 +105,7 @@ def translate(sentence, model, tokenizer, target_lang="ja", beam_width=3, max_le
                 completed_beams.append((seq, score))
                 continue
                 
-            tgt_tensor = torch.tensor(seq, dtype=torch.long).unsqueeze(0).to(DEVICE)
+            tgt_tensor = torch.tensor(seq, dtype=torch.long, device=DEVICE).unsqueeze(0)
             tgt_mask = model.make_tgt_mask(tgt_tensor)
             
             with torch.inference_mode():
@@ -117,6 +121,10 @@ def translate(sentence, model, tokenizer, target_lang="ja", beam_width=3, max_le
                                 logits[token_id] /= rep_penalty
                             else:
                                 logits[token_id] *= rep_penalty
+                
+                # Temperature scaling for output diversity control
+                if temperature != 1.0:
+                    logits = logits / temperature
                 
                 log_probs = torch.log_softmax(logits, dim=-1)
                 topk_probs, topk_ids = torch.topk(log_probs, beam_width)
@@ -189,7 +197,8 @@ def main():
             pred_text = translate(
                 sentence=source_text, model=model, tokenizer=tokenizer,
                 target_lang=target_lang, beam_width=args.beam_width, 
-                alpha=args.alpha, rep_penalty=args.rep_penalty
+                alpha=args.alpha, rep_penalty=args.rep_penalty,
+                temperature=args.temperature
             )
             
             # --- Post-processing ---
@@ -203,7 +212,8 @@ def main():
                 clean_pred = re.sub(r'、+', '、', clean_pred)
 
                 truth_text = truth_text.replace(" ", "") 
-                clean_pred = re.sub(r'[a-zA-Z]+', '', clean_pred)
+                # Note: English characters are intentionally preserved for valid
+                # loanwords, brand names, and proper nouns in Japanese text
 
             if target_lang == "en":
                 clean_pred = clean_pred.replace("@@ ", "")
@@ -256,6 +266,17 @@ def main():
     except Exception as e:
         print(f"COMET calculation failed: {e}")
     print("="*50)
+
+    # --- Export for MQM Analysis ---
+    if args.export:
+        export_path = args.export_path
+        os.makedirs(os.path.dirname(export_path) if os.path.dirname(export_path) else '.', exist_ok=True)
+        with open(export_path, 'w', encoding='utf-8') as ef:
+            ef.write("id\tsource\tprediction\treference\n")
+            for idx, (s, p, r) in enumerate(zip(sources, predictions, references), 1):
+                ef.write(f"{idx}\t{s}\t{p}\t{r}\n")
+        print(f"\nExported {len(predictions)} translations to: {export_path}")
+        print("Run MQM evaluation with: python evaluate/mqm_evaluate.py --input " + export_path)
 
 if __name__ == "__main__":
     main()

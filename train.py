@@ -75,7 +75,6 @@ def train():
         d_model=D_MODEL, num_layers=NUM_LAYERS,
         num_heads=NUM_HEADS, d_ff=D_FF, dropout=0.1
     ).to(DEVICE)
-    
     # Added label_smoothing to prevent the model from becoming overconfident,
     # which helps mitigate literal translation and idiomatic blindness.
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.1)
@@ -158,7 +157,8 @@ def train():
             current_file = chunk_files[chunk_idx]
             
             total_lines = count_lines(current_file)
-            total_batches_in_file = math.ceil(total_lines / BATCH_SIZE)
+            # Each line produces 2 training pairs (EN→JA + JA→EN)
+            total_batches_in_file = math.ceil((total_lines * 2) / BATCH_SIZE)
             
             print(f" [Processing File: {os.path.basename(current_file)}]")
             print(f" [Local Epoch: {local_epoch_display}/{GLOBAL_EPOCHS}]")
@@ -219,14 +219,19 @@ def train():
                 just_saved = (batch_idx > 1 and (batch_idx - 1) % 1000 == 0)
                 
                 # Print immediately upon resuming from a checkpoint
-                just_resumed = batch_idx == (RESUME_TRAINING and 'is_intermediate' in locals() and is_intermediate and batch_idx == checkpoint.get('batch_idx', -1) + 1)
+                just_resumed = False
+                if RESUME_TRAINING and 'checkpoint' in locals() and 'is_intermediate' in locals():
+                    if is_intermediate:
+                        resume_batch = checkpoint.get('batch_idx', -1)
+                        if resume_batch != -1 and batch_idx == resume_batch + 1:
+                            just_resumed = True
 
                 is_first_batch = (batch_idx == 1)
                 
                 # Condition: Print every 200 batches (excluding batch 0), OR right after resume/save
                 if batch_idx > 0 and (batch_idx % 200 == 0 or just_resumed or just_saved or is_first_batch):
                     current_lr = scheduler.get_last_lr()[0]
-                    print(f"  [Epoch {local_epoch_display:02d} | Chunk {chunk_idx+1:02d}] Batch {batch_idx:04d}/{total_batches_in_file} | Loss: {(loss.item()*ACCUMULATION_STEPS):.4f} | LR: {current_lr:.7f}")
+                    print(f"  [Epoch {local_epoch_display:02d} | Chunk {chunk_idx+1:02d}] Batch {batch_idx:04d}/~{total_batches_in_file} | Loss: {(loss.item()*ACCUMULATION_STEPS):.4f} | LR: {current_lr:.7f}")
 
                 # ==========================================
                 # Save Intermediate Checkpoint

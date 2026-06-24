@@ -24,6 +24,10 @@ class TranslationIterableDataset(IterableDataset):
         self.tgt_bos = self.tgt_tokenizer.token_to_id("<s>")
         self.tgt_eos = self.tgt_tokenizer.token_to_id("</s>")
 
+        # Cache direction tag IDs once (avoid per-line dictionary lookups)
+        self.tag_2ja = self.src_tokenizer.token_to_id("<2ja>")
+        self.tag_2en = self.src_tokenizer.token_to_id("<2en>")
+
     def process_line(self, line):
         parts = line.strip('\n').split('\t')
         if len(parts) >= 5:
@@ -34,18 +38,24 @@ class TranslationIterableDataset(IterableDataset):
             except ValueError:
                 return None
                 
-            src_text = parts[3]
-            tgt_text = parts[4]
+            en_text = parts[3]
+            ja_text = parts[4]
             
-            src_enc = self.src_tokenizer.encode(src_text).ids
-            tgt_enc = self.tgt_tokenizer.encode(tgt_text).ids
+            en_enc = self.src_tokenizer.encode(en_text).ids
+            ja_enc = self.tgt_tokenizer.encode(ja_text).ids
             
-            if len(src_enc) > self.max_length - 2 or len(tgt_enc) > self.max_length - 2:
+            if len(en_enc) > self.max_length - 3 or len(ja_enc) > self.max_length - 3:
                 return None
-                
-            src_tensor = torch.tensor([self.src_bos] + src_enc + [self.src_eos], dtype=torch.long)
-            tgt_tensor = torch.tensor([self.tgt_bos] + tgt_enc + [self.tgt_eos], dtype=torch.long)
-            return src_tensor, tgt_tensor
+
+            # EN→JA direction: source = <s> <2ja> en_tokens </s>, target = <s> ja_tokens </s>
+            src_en2ja = torch.tensor([self.src_bos, self.tag_2ja] + en_enc + [self.src_eos], dtype=torch.long)
+            tgt_en2ja = torch.tensor([self.tgt_bos] + ja_enc + [self.tgt_eos], dtype=torch.long)
+
+            # JA→EN direction: source = <s> <2en> ja_tokens </s>, target = <s> en_tokens </s>
+            src_ja2en = torch.tensor([self.src_bos, self.tag_2en] + ja_enc + [self.src_eos], dtype=torch.long)
+            tgt_ja2en = torch.tensor([self.tgt_bos] + en_enc + [self.tgt_eos], dtype=torch.long)
+
+            return [(src_en2ja, tgt_en2ja), (src_ja2en, tgt_ja2en)]
         return None
 
     def __iter__(self):
@@ -57,7 +67,8 @@ class TranslationIterableDataset(IterableDataset):
             for line in f:
                 processed = self.process_line(line)
                 if processed is not None:
-                    buffer.append(processed)
+                    # process_line returns a list of (src, tgt) pairs (both directions)
+                    buffer.extend(processed)
                     
                 # Implement Bucket Batching: Sort buffer by source length to minimize padding
                 if len(buffer) >= self.buffer_size:
