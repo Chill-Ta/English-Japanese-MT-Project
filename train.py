@@ -28,13 +28,15 @@ D_FF = 2048
 VOCAB_SIZE = 50000
 
 CHUNK_DIR = "data/dataset/chunks"
-SRC_TOKENIZER = "data/tokenizer/shared_tokenizer.json"
-TGT_TOKENIZER = "data/tokenizer/shared_tokenizer.json"
+SRC_TOKENIZER = "data/tokenizer/shared_tokenizerv2.json"
+TGT_TOKENIZER = "data/tokenizer/shared_tokenizerv2.json"
 
 RESUME_TRAINING = True
 CHECKPOINT_DIR = "checkpoints"
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+if DEVICE.type == 'cuda':
+    torch.backends.cudnn.benchmark = True
 
 # ==========================================
 # Helper Function: Fast Line Counter
@@ -112,7 +114,7 @@ def train():
             
             if 'scheduler_state_dict' in checkpoint:
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            if 'scaler_state_dict' in checkpoint:
+            if 'scaler_state_dict' in checkpoint and checkpoint['scaler_state_dict']:
                 scaler.load_state_dict(checkpoint['scaler_state_dict'])
 
             start_global_epoch = checkpoint.get('global_epoch', 0)
@@ -277,6 +279,8 @@ def train():
 
             del train_loader
             gc.collect()
+            if DEVICE.type == 'cuda':
+                torch.cuda.empty_cache()
 
             # Save the final checkpoint for the completed chunk
             checkpoint_name = f"transformer_epoch_{epoch+1}_chunk_{chunk_idx+1}.pt"

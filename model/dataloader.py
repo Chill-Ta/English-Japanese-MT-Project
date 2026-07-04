@@ -9,12 +9,13 @@ def _worker_init_fn(worker_id):
     random.seed(torch.initial_seed() % 2**32)
 
 class TranslationIterableDataset(IterableDataset):
-    def __init__(self, filepath, src_tokenizer_path, tgt_tokenizer_path, max_length=128, skip_lines=0, min_score=0.70, buffer_size=2048):
+    def __init__(self, filepath, src_tokenizer_path, tgt_tokenizer_path, max_length=128, skip_lines=0, min_score=0.70, buffer_size=2048, batch_size=32):
         self.filepath = filepath
         self.max_length = max_length
         self.skip_lines = skip_lines
         self.min_score = min_score
         self.buffer_size = buffer_size
+        self.batch_size = batch_size
         
         self.src_tokenizer = Tokenizer.from_file(src_tokenizer_path)
         self.tgt_tokenizer = Tokenizer.from_file(tgt_tokenizer_path)
@@ -73,6 +74,11 @@ class TranslationIterableDataset(IterableDataset):
                 # Implement Bucket Batching: Sort buffer by source length to minimize padding
                 if len(buffer) >= self.buffer_size:
                     buffer.sort(key=lambda x: len(x[0]))
+                    # Shuffle within small groups to add randomness while keeping similar lengths together
+                    for i in range(0, len(buffer), self.batch_size):
+                        group = buffer[i:i + self.batch_size]
+                        random.shuffle(group)
+                        buffer[i:i + self.batch_size] = group
                     for item in buffer:
                         yield item
                     buffer = []
@@ -80,6 +86,10 @@ class TranslationIterableDataset(IterableDataset):
             # Yield remaining items in the buffer
             if buffer:
                 buffer.sort(key=lambda x: len(x[0]))
+                for i in range(0, len(buffer), self.batch_size):
+                    group = buffer[i:i + self.batch_size]
+                    random.shuffle(group)
+                    buffer[i:i + self.batch_size] = group
                 for item in buffer:
                     yield item
 
@@ -94,7 +104,7 @@ class PadCollate:
         return src_padded, tgt_padded
 
 def get_dataloader(filepath, src_tok_path, tgt_tok_path, batch_size=32, skip_lines=0, min_score=0.70):
-    dataset = TranslationIterableDataset(filepath, src_tok_path, tgt_tok_path, skip_lines=skip_lines, min_score=min_score)
+    dataset = TranslationIterableDataset(filepath, src_tok_path, tgt_tok_path, skip_lines=skip_lines, min_score=min_score, batch_size=batch_size)
     pad_idx = dataset.src_tokenizer.token_to_id("<pad>")
     
     is_windows = platform.system() == "Windows"
@@ -105,6 +115,7 @@ def get_dataloader(filepath, src_tok_path, tgt_tok_path, batch_size=32, skip_lin
         batch_size=batch_size, 
         collate_fn=PadCollate(pad_idx),
         num_workers=num_workers,
-        worker_init_fn=_worker_init_fn
+        worker_init_fn=_worker_init_fn,
+        pin_memory=(torch.cuda.is_available())
     )
     return dataloader, pad_idx
