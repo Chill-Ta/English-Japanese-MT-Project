@@ -3,13 +3,19 @@ from torch.utils.data import IterableDataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from tokenizers import Tokenizer
 import random
+import re
 import platform
 
 def _worker_init_fn(worker_id):
     random.seed(torch.initial_seed() % 2**32)
 
 class TranslationIterableDataset(IterableDataset):
-    def __init__(self, filepath, src_tokenizer_path, tgt_tokenizer_path, max_length=128, skip_lines=0, min_score=0.70, buffer_size=2048, batch_size=32):
+    # Regex patterns for detecting Japanese register (polite vs. plain)
+    # Compiled once at class level for performance
+    _POLITE_RE = re.compile(r'(?:です|ます|ました|ません|でしょう|ございます)')
+    _PLAIN_RE  = re.compile(r'(?:だ[。、]|だ$|である|だった|ないよ|するよ|だよ|た[。]|た$)')
+
+    def __init__(self, filepath, src_tokenizer_path, tgt_tokenizer_path, max_length=128, skip_lines=0, min_score=0.70, buffer_size=8192, batch_size=32):
         self.filepath = filepath
         self.max_length = max_length
         self.skip_lines = skip_lines
@@ -28,6 +34,33 @@ class TranslationIterableDataset(IterableDataset):
         # Cache direction tag IDs once (avoid per-line dictionary lookups)
         self.tag_2ja = self.src_tokenizer.token_to_id("<2ja>")
         self.tag_2en = self.src_tokenizer.token_to_id("<2en>")
+
+        # Style-specific tags (may be None if tokenizer doesn't have them)
+        self.tag_2ja_polite = self.src_tokenizer.token_to_id("<2ja_polite>")
+        self.tag_2ja_plain  = self.src_tokenizer.token_to_id("<2ja_plain>")
+        self._style_tags_available = (
+            self.tag_2ja_polite is not None and self.tag_2ja_plain is not None
+        )
+
+    def _detect_ja_style(self, ja_text: str) -> int:
+        """
+        Detect whether a Japanese sentence uses polite (です/ます) or
+        plain (だ/た/である) register. Returns the appropriate tag ID.
+        Falls back to the generic <2ja> tag if style tokens are unavailable.
+        """
+        if not self._style_tags_available:
+            return self.tag_2ja
+
+        has_polite = bool(self._POLITE_RE.search(ja_text))
+        has_plain  = bool(self._PLAIN_RE.search(ja_text))
+
+        if has_polite and not has_plain:
+            return self.tag_2ja_polite
+        elif has_plain and not has_polite:
+            return self.tag_2ja_plain
+        else:
+            # Mixed or ambiguous — default to plain (more common in training data)
+            return self.tag_2ja_plain
 
     def process_line(self, line):
         parts = line.strip('\n').split('\t')
@@ -48,8 +81,11 @@ class TranslationIterableDataset(IterableDataset):
             if len(en_enc) > self.max_length - 3 or len(ja_enc) > self.max_length - 3:
                 return None
 
-            # EN→JA direction: source = <s> <2ja> en_tokens </s>, target = <s> ja_tokens </s>
-            src_en2ja = torch.tensor([self.src_bos, self.tag_2ja] + en_enc + [self.src_eos], dtype=torch.long)
+            # Detect Japanese register for style-aware tagging
+            ja_style_tag = self._detect_ja_style(ja_text)
+
+            # EN→JA direction: source = <s> <2ja_style> en_tokens </s>, target = <s> ja_tokens </s>
+            src_en2ja = torch.tensor([self.src_bos, ja_style_tag] + en_enc + [self.src_eos], dtype=torch.long)
             tgt_en2ja = torch.tensor([self.tgt_bos] + ja_enc + [self.tgt_eos], dtype=torch.long)
 
             # JA→EN direction: source = <s> <2en> ja_tokens </s>, target = <s> en_tokens </s>

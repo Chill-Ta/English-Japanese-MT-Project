@@ -12,6 +12,37 @@ from model.transformer import Transformer
 from comet import download_model, load_from_checkpoint
 
 # ==========================================
+# MeCab Tokenizer for Japanese BLEU
+# ==========================================
+# Standard SacreBLEU evaluation for Japanese requires morphological
+# segmentation before BLEU computation. Without this, BLEU treats
+# Japanese as character-level, destroying n-gram overlap and producing
+# artificially low scores (e.g., 1.71 instead of ~20+).
+try:
+    import fugashi
+    _MECAB_TAGGER = fugashi.Tagger()
+    _MECAB_AVAILABLE = True
+except ImportError:
+    _MECAB_TAGGER = None
+    _MECAB_AVAILABLE = False
+    print("WARNING: fugashi (MeCab) not installed. Japanese BLEU will use fallback tokenization.")
+    print("         Install with: pip install fugashi unidic-lite")
+
+def tokenize_japanese(text: str) -> str:
+    """
+    Tokenize Japanese text into space-separated morphemes using MeCab.
+    This is required for meaningful BLEU calculation on Japanese text.
+    Falls back to character-level tokenization if MeCab is unavailable.
+    """
+    if _MECAB_AVAILABLE and _MECAB_TAGGER is not None:
+        # MeCab returns Word objects; extract surface forms
+        morphemes = [word.surface for word in _MECAB_TAGGER(text) if word.surface.strip()]
+        return " ".join(morphemes)
+    else:
+        # Fallback: character-level (better than nothing, but still suboptimal)
+        return " ".join(list(text.replace(" ", "")))
+
+# ==========================================
 # 1. Argument Parser Configuration
 # ==========================================
 def parse_args():
@@ -27,6 +58,9 @@ def parse_args():
     parser.add_argument("--alpha", type=float, default=0.75, help="Length penalty parameter")
     parser.add_argument("--rep_penalty", type=float, default=1.3, help="Repetition penalty ( > 1.0 to penalize)")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for softmax scaling (< 1.0 = sharper, > 1.0 = smoother)")
+
+    parser.add_argument("--style", type=str, default="plain", choices=["plain", "polite"],
+                        help="Japanese style for EN->JA: plain (だ/た) or polite (です/ます). Default: plain")
 
     parser.add_argument("--export", action="store_true", help="Export source/prediction/reference to TSV for MQM analysis")
     parser.add_argument("--export_path", type=str, default="evaluate/mt_output_for_mqm.tsv", help="Path for export TSV file")
@@ -64,9 +98,12 @@ def parse_args():
 # 2. Configurations (Global variables)
 # ==========================================
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-TOKENIZER_FILE = "data/tokenizer/shared_tokenizer.json"
+# Prefer the v3 tokenizer (with style tags) if available, else fall back to v2
+_TOK_V3 = "data/tokenizer/shared_tokenizerv3.json"
+_TOK_V2 = "data/tokenizer/shared_tokenizerv2.json"
+TOKENIZER_FILE = _TOK_V3 if os.path.exists(_TOK_V3) else _TOK_V2
 TEST_FILE = "data/dataset/test-set/test_merged.txt"
-MODEL_PATH = "checkpoints/transformer_epoch_10_chunk_3.pt" # Update to your chunk checkpoint name
+MODEL_PATH = "checkpoints/transformer_epoch_10_chunk_4.pt" # Update to your chunk checkpoint name
 
 D_MODEL = 512
 NUM_LAYERS = 6
@@ -77,9 +114,16 @@ MAX_LENGTH = 128
 # ==========================================
 # 3. Translation Function
 # ==========================================
-def translate(sentence, model, tokenizer, target_lang="ja", beam_width=3, max_length=MAX_LENGTH, alpha=0.75, rep_penalty=1.5, temperature=1.0):
-    tag = "<2ja>" if target_lang == "ja" else "<2en>"
-    tag_id = tokenizer.token_to_id(tag)
+def translate(sentence, model, tokenizer, target_lang="ja", beam_width=3, max_length=MAX_LENGTH, alpha=0.75, rep_penalty=1.5, temperature=1.0, style="plain"):
+    # Style-aware tag selection for EN->JA direction
+    if target_lang == "ja":
+        style_tag = f"<2ja_{style}>"
+        tag_id = tokenizer.token_to_id(style_tag)
+        # Fallback: if the style-specific tag doesn't exist (old tokenizer), use <2ja>
+        if tag_id is None:
+            tag_id = tokenizer.token_to_id("<2ja>")
+    else:
+        tag_id = tokenizer.token_to_id("<2en>")
     
     src_tokens = tokenizer.encode(sentence).ids
     src_ids = [tokenizer.token_to_id("<s>"), tag_id] + src_tokens + [tokenizer.token_to_id("</s>")]
@@ -198,7 +242,8 @@ def main():
                 sentence=source_text, model=model, tokenizer=tokenizer,
                 target_lang=target_lang, beam_width=args.beam_width, 
                 alpha=args.alpha, rep_penalty=args.rep_penalty,
-                temperature=args.temperature
+                temperature=args.temperature,
+                style=args.style
             )
             
             # --- Post-processing ---
@@ -240,16 +285,27 @@ def main():
         print(f"[Sample no. {sample['id']}]\nS: {sample['source']}\nP: {sample['pred']}\nR: {sample['ref']}\n" + "-"*30)
 
     print("\n" + "="*50 + "\nEvaluation Metrics\n" + "="*50)
-    bleu_tok = 'intl' if args.direction == "en-ja" else '13a'
-    
-    try:
-        bleu = sacrebleu.corpus_bleu(predictions, [references], tokenize=bleu_tok)
-        print(f"BLEU Score  (tok:{bleu_tok}): {bleu.score:.2f}")
-    except Exception:
-        bleu = sacrebleu.corpus_bleu(predictions, [references], tokenize='intl')
-        print(f"BLEU Score  (tokenizer:intl): {bleu.score:.2f}")
+
+    # ── Japanese BLEU: MeCab pre-tokenization ──
+    # Standard protocol: tokenize Japanese with MeCab, then compute BLEU
+    # with tokenize='none' (already tokenized). This fixes the artificially
+    # low BLEU caused by SacreBLEU's 'intl' tokenizer treating Japanese
+    # as character-level.
+    if args.direction == "en-ja":
+        mecab_preds = [tokenize_japanese(p) for p in predictions]
+        mecab_refs  = [tokenize_japanese(r) for r in references]
+        bleu = sacrebleu.corpus_bleu(mecab_preds, [mecab_refs], tokenize='none')
+        bleu_label = "ja-mecab"
+        print(f"BLEU Score  (tok:{bleu_label}): {bleu.score:.2f}")
+        # Also show intl for backward comparison
+        bleu_intl = sacrebleu.corpus_bleu(predictions, [references], tokenize='intl')
+        print(f"BLEU Score  (tok:intl, legacy): {bleu_intl.score:.2f}")
+    else:
+        bleu = sacrebleu.corpus_bleu(predictions, [references], tokenize='13a')
+        print(f"BLEU Score  (tok:13a): {bleu.score:.2f}")
     
     print(f"chrF2 Score : {sacrebleu.corpus_chrf(predictions, [references]).score:.2f}")
+    print(f"chrF++ Score: {sacrebleu.corpus_chrf(predictions, [references], word_order=2).score:.2f}")
     print(f"TER Score   : {sacrebleu.corpus_ter(predictions, [references]).score:.2f}")
     
     # --- COMET ---

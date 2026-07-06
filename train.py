@@ -6,6 +6,7 @@ from torch.optim import AdamW
 from torch.amp import GradScaler, autocast
 import os
 import gc
+import json
 from torch.optim.lr_scheduler import LambdaLR
 
 from model.dataloader import get_dataloader
@@ -25,11 +26,16 @@ D_MODEL = 512
 NUM_LAYERS = 6
 NUM_HEADS = 8
 D_FF = 2048
-VOCAB_SIZE = 50000
+VOCAB_SIZE = 50002  # Extended from 50000 to include <2ja_polite> and <2ja_plain>
 
 CHUNK_DIR = "data/dataset/chunks"
-SRC_TOKENIZER = "data/tokenizer/shared_tokenizerv2.json"
-TGT_TOKENIZER = "data/tokenizer/shared_tokenizerv2.json"
+
+# Prefer v3 tokenizer (with style tags) if available, else fall back to v2
+_TOK_V3 = "data/tokenizer/shared_tokenizerv3.json"
+_TOK_V2 = "data/tokenizer/shared_tokenizerv2.json"
+_ACTIVE_TOK = _TOK_V3 if os.path.exists(_TOK_V3) else _TOK_V2
+SRC_TOKENIZER = _ACTIVE_TOK
+TGT_TOKENIZER = _ACTIVE_TOK
 
 RESUME_TRAINING = True
 CHECKPOINT_DIR = "checkpoints"
@@ -116,6 +122,30 @@ def train():
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             if 'scaler_state_dict' in checkpoint and checkpoint['scaler_state_dict']:
                 scaler.load_state_dict(checkpoint['scaler_state_dict'])
+
+            # ── Embedding Resize (vocab migration) ──
+            # If the checkpoint was saved with a smaller vocab (e.g., 50000) but
+            # current VOCAB_SIZE is larger (e.g., 50002 for style tags), auto-resize.
+            ckpt_vocab = checkpoint.get('vocab_size_migrated_to', None)
+            if ckpt_vocab is None:
+                # Infer from embedding weight shape
+                ckpt_vocab = checkpoint['model_state_dict'].get(
+                    'encoder.embedding.weight', torch.empty(0)
+                ).shape[0]
+            
+            if ckpt_vocab > 0 and ckpt_vocab < VOCAB_SIZE:
+                print(f"   -> Auto-resizing embeddings: {ckpt_vocab} → {VOCAB_SIZE}")
+                for key in ['encoder.embedding.weight', 'decoder.embedding.weight', 'decoder.fc_out.weight']:
+                    if key in model.state_dict() and model.state_dict()[key].shape[0] == VOCAB_SIZE:
+                        old_w = checkpoint['model_state_dict'].get(key)
+                        if old_w is not None and old_w.shape[0] == ckpt_vocab:
+                            mean_emb = old_w.mean(dim=0, keepdim=True)
+                            num_new = VOCAB_SIZE - ckpt_vocab
+                            new_rows = mean_emb.expand(num_new, old_w.shape[1]).clone()
+                            checkpoint['model_state_dict'][key] = torch.cat([old_w, new_rows], dim=0)
+                # Reload with resized weights
+                model.load_state_dict(checkpoint['model_state_dict'])
+                print(f"   -> Embedding resize complete.")
 
             start_global_epoch = checkpoint.get('global_epoch', 0)
             start_chunk_idx = checkpoint.get('chunk_idx', 0)
