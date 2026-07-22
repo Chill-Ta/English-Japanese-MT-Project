@@ -63,10 +63,20 @@ def split_data_into_chunks(input_filepath, output_directory, lines_per_chunk):
 
 if __name__ == "__main__":
     # ==========================================
-    # Configuration
+    # CLI Configuration (Phase 3 upgrade)
     # ==========================================
-    INPUT_FILE = "data/dataset/train-set/en-ja/resources/en-ja_extracted1M.txt"  
-    OUTPUT_DIR = "data/dataset/chunks"                    
-    LINES_PER_CHUNK = 250000                              
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Split a large dataset file into smaller chunks for training."
+    )
+    parser.add_argument("--input", type=str,
+                        default="data/dataset/train-set/en-ja/resources/en-ja_extracted4M.txt",
+                        help="Input file path")
+    parser.add_argument("--output_dir", type=str,
+                        default="data/dataset/chunks",
+                        help="Output directory for chunk files")
+    parser.add_argument("--lines_per_chunk", type=int, default=250000,
+                        help="Number of lines per chunk (default: 250000, use 500000 for 5M+ datasets)")
+    args = parser.parse_args()
 
-    split_data_into_chunks(INPUT_FILE, OUTPUT_DIR, LINES_PER_CHUNK)
+    split_data_into_chunks(args.input, args.output_dir, args.lines_per_chunk)

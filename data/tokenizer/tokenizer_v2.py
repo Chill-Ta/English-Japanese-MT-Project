@@ -213,7 +213,11 @@ def train_tokenizer(
     )
 
     # 1. Special tokens
-    special_tokens = ["<pad>", "<s>", "</s>", "<unk>", "<mask>", "<2en>", "<2ja>"]
+    special_tokens = [
+        "<pad>", "<s>", "</s>", "<unk>", "<mask>",
+        "<2en>", "<2ja>",
+        "<2ja_polite>", "<2ja_plain>",  # Style control tags for EN→JA register
+    ]
 
     # 2. BPE model
     #    byte_fallback=True: any character not in the learned vocabulary is
