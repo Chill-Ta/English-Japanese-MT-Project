@@ -17,34 +17,40 @@ def plot_training_loss():
         print("No checkpoint files found.")
         return
 
+    epoch_to_max_chunk = {}
+
+    # First, scan all checkpoint files and identify the last chunk index for each epoch
+    for file in pt_files:
+        filename = os.path.basename(file)
+        match = re.search(r"transformer_epoch_(\d+)_chunk_(\d+)\.pt", filename)
+        if match:
+            file_epoch = int(match.group(1))
+            file_chunk = int(match.group(2))
+            
+            # Keep track of the file with the largest chunk index for each epoch
+            if file_epoch not in epoch_to_max_chunk or file_chunk > epoch_to_max_chunk[file_epoch][0]:
+                epoch_to_max_chunk[file_epoch] = (file_chunk, file)
+
     epoch_loss_data = []
 
-    # Loop through and read data from each file
-    for file in pt_files:
+    # Loop through only the selected last chunk of each epoch
+    for file_epoch in sorted(epoch_to_max_chunk.keys()):
+        file_chunk, file = epoch_to_max_chunk[file_epoch]
         try:
-            # Extract epoch and chunk index from the filename to assist accurate sorting
-            filename = os.path.basename(file)
-            match = re.search(r"transformer_epoch_(\d+)_chunk_(\d+)\.pt", filename)
+            # Use map_location='cpu' to avoid consuming GPU VRAM just for viewing the data
+            checkpoint = torch.load(file, map_location='cpu', weights_only=True)
             
-            if match:
-                file_epoch = int(match.group(1))
-                file_chunk = int(match.group(2))
+            # [FIX 2] Updated key name from 'epoch' to 'global_epoch' based on train.py
+            if 'global_epoch' in checkpoint and 'loss' in checkpoint:
+                loss = checkpoint['loss']
                 
-                # Use map_location='cpu' to avoid consuming GPU VRAM just for viewing the data
-                checkpoint = torch.load(file, map_location='cpu', weights_only=True)
-                
-                # [FIX 2] Updated key name from 'epoch' to 'global_epoch' based on train.py
-                if 'global_epoch' in checkpoint and 'loss' in checkpoint:
-                    loss = checkpoint['loss']
-                    
-                    # Store data along with filename tokens for accurate time-series plotting
-                    # Note: file_epoch and file_chunk are used for chronological sorting
-                    epoch_loss_data.append((file_epoch, file_chunk, loss))
+                # Store data along with filename tokens for accurate time-series plotting
+                epoch_loss_data.append((file_epoch, file_chunk, loss))
             
         except Exception as e:
             print(f"Unable to read file {file}: {e}")
 
-    # [CRITICAL UPGRADE] Sort data chronologically by Epoch first, then by Chunk index
+    # Sort data chronologically by Epoch first, then by Chunk index
     epoch_loss_data.sort(key=lambda x: (x[0], x[1]))
 
     # Unpack data to prepare for plotting
