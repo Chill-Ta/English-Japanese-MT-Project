@@ -6,7 +6,6 @@ from torch.optim import AdamW
 from torch.amp import GradScaler, autocast
 import os
 import gc
-import json
 from torch.optim.lr_scheduler import LambdaLR
 
 from model.dataloader import get_dataloader
@@ -107,6 +106,8 @@ def train():
     start_chunk_idx = 0
     global_step = 0
     start_batch_idx = -1 
+    checkpoint = None
+    is_intermediate = False
 
     if RESUME_TRAINING:
         checkpoint_files = glob.glob(os.path.join(CHECKPOINT_DIR, "transformer_epoch_*_chunk_*.pt"))
@@ -115,13 +116,6 @@ def train():
             print(f"Loading Checkpoint From: {latest_checkpoint}")
             
             checkpoint = torch.load(latest_checkpoint, map_location=DEVICE, weights_only=True)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            
-            if 'scheduler_state_dict' in checkpoint:
-                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            if 'scaler_state_dict' in checkpoint and checkpoint['scaler_state_dict']:
-                scaler.load_state_dict(checkpoint['scaler_state_dict'])
 
             # ── Embedding Resize (vocab migration) ──
             # If the checkpoint was saved with a smaller vocab (e.g., 50000) but
@@ -133,6 +127,7 @@ def train():
                     'encoder.embedding.weight', torch.empty(0)
                 ).shape[0]
             
+            vocab_migrated = False
             if ckpt_vocab > 0 and ckpt_vocab < VOCAB_SIZE:
                 print(f"   -> Auto-resizing embeddings: {ckpt_vocab} → {VOCAB_SIZE}")
                 for key in ['encoder.embedding.weight', 'decoder.embedding.weight', 'decoder.fc_out.weight']:
@@ -143,9 +138,28 @@ def train():
                             num_new = VOCAB_SIZE - ckpt_vocab
                             new_rows = mean_emb.expand(num_new, old_w.shape[1]).clone()
                             checkpoint['model_state_dict'][key] = torch.cat([old_w, new_rows], dim=0)
-                # Reload with resized weights
-                model.load_state_dict(checkpoint['model_state_dict'])
+
+                bias_key = 'decoder.fc_out.bias'
+                old_bias = checkpoint['model_state_dict'].get(bias_key)
+                if old_bias is not None and old_bias.shape[0] == ckpt_vocab:
+                    num_new = VOCAB_SIZE - ckpt_vocab
+                    new_bias = old_bias.new_zeros(num_new)
+                    checkpoint['model_state_dict'][bias_key] = torch.cat([old_bias, new_bias], dim=0)
+
+                vocab_migrated = True
                 print(f"   -> Embedding resize complete.")
+
+            model.load_state_dict(checkpoint['model_state_dict'])
+
+            if not vocab_migrated:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            else:
+                print("   -> Optimizer state reset because checkpoint vocabulary size changed.")
+            
+            if 'scheduler_state_dict' in checkpoint:
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            if 'scaler_state_dict' in checkpoint and checkpoint['scaler_state_dict']:
+                scaler.load_state_dict(checkpoint['scaler_state_dict'])
 
             start_global_epoch = checkpoint.get('global_epoch', 0)
             start_chunk_idx = checkpoint.get('chunk_idx', 0)
@@ -252,7 +266,7 @@ def train():
                 
                 # Print immediately upon resuming from a checkpoint
                 just_resumed = False
-                if RESUME_TRAINING and 'checkpoint' in locals() and 'is_intermediate' in locals():
+                if RESUME_TRAINING and checkpoint is not None:
                     if is_intermediate:
                         resume_batch = checkpoint.get('batch_idx', -1)
                         if resume_batch != -1 and batch_idx == resume_batch + 1:
