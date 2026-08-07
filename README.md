@@ -1,4 +1,4 @@
-# Bidirectional English-Japanese Neural Machine Translation (EN ↔ JA)
+# Bidirectional English-Japanese Neural Machine Translation 
 
 An end-to-end Neural Machine Translation (NMT) system built from scratch using **PyTorch**, optimized for bidirectional translation between English (EN) and Japanese (JA). The project features a Pre-LN Transformer architecture with FlashAttention, dynamic Japanese register style control (`<2ja_polite>`, `<2ja_plain>`), a custom Metaspace BPE tokenizer, and dynamic memory-aware chunk training for constrained hardware environments.
 
