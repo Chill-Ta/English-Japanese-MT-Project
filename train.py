@@ -20,7 +20,7 @@ LEARNING_RATE = 1e-4
 MAX_LENGTH = 128
 DROPOUT = 0.1
 
-GLOBAL_EPOCHS = 10 
+GLOBAL_EPOCHS = 20 
 
 D_MODEL = 512
 NUM_LAYERS = 6        # Switch to 8 for Base+ model (~85M params, fits 6GB VRAM)
