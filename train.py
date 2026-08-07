@@ -18,14 +18,19 @@ BATCH_SIZE = 32
 ACCUMULATION_STEPS = 4
 LEARNING_RATE = 1e-4
 MAX_LENGTH = 128
+DROPOUT = 0.1
 
 GLOBAL_EPOCHS = 10 
 
 D_MODEL = 512
-NUM_LAYERS = 6
+NUM_LAYERS = 6        # Switch to 8 for Base+ model (~85M params, fits 6GB VRAM)
 NUM_HEADS = 8
 D_FF = 2048
 VOCAB_SIZE = 50002  # Extended from 50000 to include <2ja_polite> and <2ja_plain>
+
+# Set True to use Rotary Position Embedding (RoPE) instead of sinusoidal PE.
+# NOTE: Requires fresh training — cannot resume from sinusoidal PE checkpoints.
+USE_ROPE = False
 
 CHUNK_DIR = "data/dataset/chunks"
 
@@ -80,12 +85,13 @@ def train():
         src_vocab_size=VOCAB_SIZE, tgt_vocab_size=VOCAB_SIZE,
         src_pad_idx=pad_idx, tgt_pad_idx=pad_idx,
         d_model=D_MODEL, num_layers=NUM_LAYERS,
-        num_heads=NUM_HEADS, d_ff=D_FF, dropout=0.1
+        num_heads=NUM_HEADS, d_ff=D_FF, dropout=DROPOUT,
+        use_rope=USE_ROPE
     ).to(DEVICE)
     # Added label_smoothing to prevent the model from becoming overconfident,
     # which helps mitigate literal translation and idiomatic blindness.
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.1)
-    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
+    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
 
     TOTAL_STEPS = TOTAL_CHUNKS * GLOBAL_EPOCHS
     WARMUP_CHUNKS = max(1, TOTAL_STEPS // 10) 
@@ -94,7 +100,8 @@ def train():
         if current_step < WARMUP_CHUNKS:
             return float(current_step + 1) / float(max(1, WARMUP_CHUNKS))
         progress = float(current_step - WARMUP_CHUNKS) / float(max(1, TOTAL_STEPS - WARMUP_CHUNKS))
-        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+        # Floor at 0.01× peak LR (≈1e-6) to maintain fine-tuning capacity
+        return max(0.01, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
     scheduler = LambdaLR(optimizer, lr_lambda)
     scaler = GradScaler(device='cuda')

@@ -103,13 +103,50 @@ _TOK_V3 = "data/tokenizer/shared_tokenizerv3.json"
 _TOK_V2 = "data/tokenizer/shared_tokenizerv2.json"
 TOKENIZER_FILE = _TOK_V3 if os.path.exists(_TOK_V3) else _TOK_V2
 TEST_FILE = "data/dataset/test-set/test_merged.txt"
-MODEL_PATH = "checkpoints/transformer_epoch_10_chunk_4.pt" # Update to your chunk checkpoint name
+MODEL_PATH = "checkpoints/transformer_epoch_10_chunk_16.pt" # Update to your chunk checkpoint name
 
 D_MODEL = 512
 NUM_LAYERS = 6
 NUM_HEADS = 8
 D_FF = 2048
 MAX_LENGTH = 128
+
+# Must match train.py — set True if the checkpoint was trained with RoPE
+USE_ROPE = False
+
+# ==========================================
+# 2.5 Post-Processing: EN Token Leaking Cleanup
+# ==========================================
+# Common English words that leak into Japanese output untranslated.
+# Maps isolated English tokens to their most common Japanese equivalents.
+_EN_LEAK_MAP = {
+    "true": "真実", "false": "偽", "good": "良い", "bad": "悪い",
+    "yes": "はい", "no": "いいえ", "ok": "了解", "nice": "素敵",
+    "the": "", "a": "", "an": "", "is": "", "are": "", "was": "",
+    "and": "", "or": "", "but": "", "not": "",
+}
+
+# Regex: detect isolated ASCII words surrounded by Japanese characters
+_JA_SCRIPT_RE = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF。、]')
+_ISOLATED_EN_RE = re.compile(r'(?<=[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF。、])\s*([A-Za-z]+)\s*(?=[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF。、])')
+
+def clean_ja_english_leaking(text: str) -> str:
+    """
+    Remove isolated English words that leaked into Japanese output.
+    Only removes words that are surrounded by Japanese characters on both sides.
+    Preserves legitimate loanwords written in ASCII (proper nouns, brands).
+    """
+    def _replace(m):
+        word = m.group(1).lower()
+        if word in _EN_LEAK_MAP:
+            return _EN_LEAK_MAP[word]
+        # If the word is very short (1-3 chars) and not a known abbreviation, remove it
+        if len(word) <= 3 and not word.isupper():
+            return ""
+        # Keep longer words and acronyms (could be proper nouns)
+        return m.group(0)
+    
+    return _ISOLATED_EN_RE.sub(_replace, text)
 
 # ==========================================
 # 3. Translation Function
@@ -211,7 +248,8 @@ def main():
         src_vocab_size=vocab_size, tgt_vocab_size=vocab_size,
         src_pad_idx=pad_idx, tgt_pad_idx=pad_idx,
         d_model=D_MODEL, num_layers=NUM_LAYERS, 
-        num_heads=NUM_HEADS, d_ff=D_FF
+        num_heads=NUM_HEADS, d_ff=D_FF,
+        use_rope=USE_ROPE
     ).to(DEVICE)
 
     checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=True)
@@ -255,6 +293,9 @@ def main():
                 # Cleanup duplicated Japanese punctuations
                 clean_pred = re.sub(r'。+', '。', clean_pred)
                 clean_pred = re.sub(r'、+', '、', clean_pred)
+
+                # Remove leaked English tokens surrounded by Japanese characters
+                clean_pred = clean_ja_english_leaking(clean_pred)
 
                 truth_text = truth_text.replace(" ", "") 
                 # Note: English characters are intentionally preserved for valid

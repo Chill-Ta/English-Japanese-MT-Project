@@ -27,9 +27,12 @@
 
 ### 2. GPU Memory & VRAM Safety (`gpu_vram_analysis.md`, `train.py`)
 * **VRAM Target:** Design for a **6GB VRAM budget** (tested on NVIDIA RTX 2060, ~2.0 GB active footprint).
-* **Hyperparameter Limits:**
-  - `d_model`: 512, `num_layers`: 6, `num_heads`: 8, `d_ff`: 2048
+* **Hyperparameter Limits (Base config):**
+  - `d_model`: 512, `num_layers`: 6 (or 8 for Base+), `num_heads`: 8, `d_ff`: 2048
   - `max_length`: 128 tokens, `batch_size`: 32, `accumulation_steps`: 4
+  - Base (6L): ~69.8M params, ~2 GB VRAM. Base+ (8L): ~84.5M params, ~3 GB VRAM.
+* **Positional Encoding:** Supports both legacy sinusoidal PE (`USE_ROPE = False`) and Rotary Position Embedding (`USE_ROPE = True`). RoPE requires a fresh training run and cannot resume from sinusoidal PE checkpoints.
+* **Regularization:** `AdamW` with `weight_decay=0.01`. Cosine LR schedule with floor at `0.01×` peak LR to prevent complete LR collapse.
 * **Mixed Precision API:** Use PyTorch 2.0+ native AMP via `torch.amp.autocast(device_type='cuda')` and `torch.amp.GradScaler(device='cuda')`.
 * **Memory Cleanup:** Between chunk executions in `train.py`, explicitly perform `del train_loader`, `gc.collect()`, and `torch.cuda.empty_cache()` to prevent CUDA memory fragmentation.
 
@@ -51,25 +54,26 @@ Maintain strict file modularity and clear component boundaries:
 │   │   ├── chunk-split.py      # Corpus chunking utility
 │   │   ├── filter-data-en-ja.py # Quality score thresholding
 │   │   ├── semantic_filter.py  # Semantic alignment filtering
-│   │   ├── idiom_augmentation.py # Idiom-focused data augmentation
-│   │   ├── pronoun_augment.py  # Pronoun-focused data augmentation
+│   │   ├── idiom_augmentation.py # Idiom-focused data augmentation (300+ idioms, 72K+ pairs)
+│   │   ├── negation_augment.py # Negation/polarity/double-negative augmentation
+│   │   ├── pronoun_augment.py  # Pronoun-focused data augmentation (pro-drop fix)
 │   │   └── data-extract-and-shuffle.py # Dataset randomizing utility
 │   ├── dataset/                # Train/Test corpora & chunk splits
 │   │   ├── chunks/             # Processed training chunk files
 │   │   ├── test-set/           # Evaluation test datasets
-│   │   └── train-set/          # Raw training datasets
+│   │   └── train-set/          # Raw training datasets & augmented data files
 │   └── tokenizer/              # BPE Tokenizer training & migration scripts
 │       ├── tokenizer_v2.py     # BPE Trainer with Metaspace sentinel U+2581
 │       ├── extend_tokenizer.py # Vocabulary migration tool (adds style tags)
 │       └── shared_tokenizerv3.json # Active 50,002 vocabulary config
 ├── model/                      # PyTorch Transformer architecture
-│   ├── attention.py            # FlashAttention (SDPA), Positional Encoding, FFN
-│   ├── encoder.py              # Pre-LN Encoder Block Stack
-│   ├── decoder.py              # Pre-LN Decoder Block Stack
-│   ├── transformer.py          # Full Transformer with 3-way weight sharing
+│   ├── attention.py            # FlashAttention (SDPA), RoPE & Sinusoidal PE, FFN
+│   ├── encoder.py              # Pre-LN Encoder Block Stack (supports RoPE)
+│   ├── decoder.py              # Pre-LN Decoder Block Stack (supports RoPE)
+│   ├── transformer.py          # Full Transformer with 3-way weight sharing & USE_ROPE toggle
 │   └── dataloader.py           # IterableDataset with bucket batching & style detection
 ├── evaluate/                   # Evaluation & Quality Metrics scripts
-│   ├── evaluate.py             # SacreBLEU (MeCab/Fugashi JA tokenization), chrF2, TER, COMET
+│   ├── evaluate.py             # SacreBLEU (MeCab/Fugashi JA), chrF2, TER, COMET, EN-leak cleanup
 │   ├── loss_check.py           # Chronological loss curve visualizer
 │   └── mqm_evaluate.py         # Multidimensional Quality Metrics & Back-Translation gating
 ├── checkpoints/                # PyTorch saved checkpoint state files (.pt)
@@ -84,10 +88,10 @@ Maintain strict file modularity and clear component boundaries:
 
 ## Skill Map & Component Reference
 * `data-processing-skill`:
-  - Handles corpus line-slicing (`chunk-split.py`), quality score filtering (`min_score=0.70`), semantic filtering, pronoun/idiom data augmentation, and BPE tokenizer training/extension (`tokenizer_v2.py`, `extend_tokenizer.py`).
+  - Handles corpus line-slicing (`chunk-split.py`), quality score filtering (`min_score=0.70`), semantic filtering, idiom augmentation (300+ idioms, `idiom_augmentation.py`), negation/polarity augmentation (`negation_augment.py`), pronoun pro-drop augmentation (`pronoun_augment.py`), and BPE tokenizer training/extension (`tokenizer_v2.py`, `extend_tokenizer.py`).
 * `model-architecture-skill`:
-  - Manages Pre-LN Transformer building blocks (`model/transformer.py`, `encoder.py`, `decoder.py`), FlashAttention SDPA with combined causal + pad masks (`model/attention.py`), and bucket-batched `TranslationIterableDataset` with Japanese style detection (`model/dataloader.py`).
+  - Manages Pre-LN Transformer building blocks (`model/transformer.py`, `encoder.py`, `decoder.py`) with configurable `NUM_LAYERS` (6 or 8) and `USE_ROPE` toggle. Supports both legacy sinusoidal PE and Rotary Position Embedding (RoPE). FlashAttention SDPA with combined causal + pad masks (`model/attention.py`), and bucket-batched `TranslationIterableDataset` with Japanese style detection (`model/dataloader.py`).
 * `training-checkpoint-skill`:
-  - Oversees multi-epoch chunk training loops (`train.py`), 1,000-batch intermediate saving/cleanup, AdamW optimizer with Cosine Warmup `LambdaLR`, `GradScaler` AMP execution, and automatic checkpoint embedding resizing.
+  - Oversees multi-epoch chunk training loops (`train.py`), 1,000-batch intermediate saving/cleanup, AdamW optimizer (`weight_decay=0.01`) with Cosine Warmup `LambdaLR` (floor at `0.01×` peak LR), `GradScaler` AMP execution, and automatic checkpoint embedding resizing.
 * `evaluation-metric-skill`:
-  - Handles SacreBLEU evaluation (utilizing `fugashi`/MeCab for Japanese morphological segmentation), chrF2, TER, COMET (`wmt22-comet-da`) in `evaluate/evaluate.py`, training loss curve plotting in `evaluate/loss_check.py`, and MQM quality scoring / Back-Translation safety gating in `evaluate/mqm_evaluate.py`.
+  - Handles SacreBLEU evaluation (utilizing `fugashi`/MeCab for Japanese morphological segmentation), chrF2, TER, COMET (`wmt22-comet-da`) in `evaluate/evaluate.py` (with EN-token-leaking post-processing cleanup for JA output), training loss curve plotting in `evaluate/loss_check.py`, and MQM quality scoring / Back-Translation safety gating in `evaluate/mqm_evaluate.py`.

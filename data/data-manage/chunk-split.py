@@ -70,7 +70,7 @@ if __name__ == "__main__":
         description="Split a large dataset file into smaller chunks for training."
     )
     parser.add_argument("--input", type=str,
-                        default="data/dataset/train-set/en-ja/resources/en-ja_extracted4M.txt",
+                        default="data/dataset/train-set/en-ja/resources/en-ja_extracted8M.txt",
                         help="Input file path")
     parser.add_argument("--output_dir", type=str,
                         default="data/dataset/chunks",

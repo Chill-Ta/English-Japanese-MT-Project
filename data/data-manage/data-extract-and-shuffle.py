@@ -6,11 +6,11 @@ import time
 # 1. Configure File Paths and Target Line Range
 # ==========================================
 INPUT_FILE = "data/dataset/train-set/en-ja/resources/en-ja_extracted_filtered.txt" 
-OUTPUT_FILE = "data/dataset/train-set/en-ja/resources/en-ja_extracted4M.txt"
+OUTPUT_FILE = "data/dataset/train-set/en-ja/resources/en-ja_extracted8M.txt"
 
 # Set target rows to extract 
-START_ROW = 1      # Starting line number
-END_ROW = 4000000        # Ending line number (set to None to extract until the end of the file)
+START_ROW = 4000001      # Starting line number
+END_ROW = 8000000        # Ending line number (set to None to extract until the end of the file)
 
 def extract_and_shuffle():
     if END_ROW is not None:

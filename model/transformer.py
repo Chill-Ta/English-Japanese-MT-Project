@@ -15,11 +15,12 @@ class Transformer(nn.Module):
         num_heads: int = 8,   # 512/8 = 64 dims per head
         # Fix: d_ff should be 4x of d_model (standard), not 16x
         d_ff: int = 2048, 
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        use_rope: bool = False
     ):
         super().__init__()
-        self.encoder = Encoder(src_vocab_size, d_model, num_layers, num_heads, d_ff, dropout)
-        self.decoder = Decoder(tgt_vocab_size, d_model, num_layers, num_heads, d_ff, dropout)
+        self.encoder = Encoder(src_vocab_size, d_model, num_layers, num_heads, d_ff, dropout, use_rope=use_rope)
+        self.decoder = Decoder(tgt_vocab_size, d_model, num_layers, num_heads, d_ff, dropout, use_rope=use_rope)
         self.src_pad_idx = src_pad_idx
         self.tgt_pad_idx = tgt_pad_idx
         
